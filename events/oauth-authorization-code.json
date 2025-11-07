@@ -1,0 +1,13 @@
+{
+  "body": "grant_type=authorization_code&code=AUTHORIZATION_CODE_FROM_ALEXA&client_id=alexa-skill-messaging&redirect_uri=https://pitangui.amazon.com/api/skill/link/12345",
+  "isBase64Encoded": false,
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "httpMethod": "POST",
+  "path": "/auth/token",
+  "requestContext": {
+    "requestId": "test-request-id"
+  }
+}
+

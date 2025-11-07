@@ -1,0 +1,13 @@
+{
+  "body": "grant_type=refresh_token&refresh_token=REFRESH_TOKEN_FROM_ALEXA&client_id=alexa-skill-messaging",
+  "isBase64Encoded": false,
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "httpMethod": "POST",
+  "path": "/auth/token",
+  "requestContext": {
+    "requestId": "test-request-id"
+  }
+}
+

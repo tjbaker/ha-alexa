@@ -1,0 +1,7 @@
+# Production dependencies for AWS Lambda
+urllib3>=2.0.0,<3.0.0
+
+# Development dependencies (install with: pip install -e ".[dev]")
+# Or install individually for local development:
+# pip install mypy ruff black pytest pytest-cov pytest-mock types-urllib3
+

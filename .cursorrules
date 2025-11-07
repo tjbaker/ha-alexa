@@ -1,0 +1,91 @@
+# Cursor AI Rules for ha-alexa
+
+## Project Overview
+
+Python 3.13 AWS Lambda project bridging Amazon Alexa Smart Home Skills with Home Assistant:
+- `alexa_smart_home_handler.py` - Alexa Smart Home directives
+- `alexa_oauth_handler.py` - OAuth token exchange
+
+## Core Principles
+
+1. **Type Safety** - 100% type coverage, strict mypy
+2. **Security** - NEVER log tokens/secrets/passwords
+3. **Python 3.13** - Use `|` for unions, modern syntax only
+4. **Immutability** - Frozen dataclasses for data structures
+5. **Minimal Dependencies** - Only urllib3 for production
+
+## Critical Security Rules
+
+**NEVER log sensitive data:**
+```python
+# ✅ Good
+logger.debug(f"Token: [REDACTED]")
+
+# ❌ BAD - NEVER DO THIS
+logger.debug(f"Token: {token}")
+```
+
+Always redact: `token`, `access_token`, `refresh_token`, `password`, `secret`, `client_secret`, `code`
+
+## Type Hints (Required)
+
+```python
+# ✅ Use Python 3.13 syntax
+def process(event: dict[str, Any]) -> dict[str, Any]:
+    token: str | None = event.get("token")
+    
+# ❌ Don't use old syntax
+def process(event: Dict[str, Any]) -> Dict[str, Any]:
+    token: Optional[str] = event.get("token")
+```
+
+## Data Structures
+
+Use frozen dataclasses:
+```python
+@dataclass(frozen=True)
+class Config:
+    base_url: str
+    verify_ssl: bool
+```
+
+## Error Handling
+
+```python
+# ✅ Use proper exceptions
+if not base_url:
+    raise ValueError("BASE_URL is required")
+
+# ❌ Never use assert for validation
+assert base_url is not None  # Can be disabled with -O
+```
+
+## Environment Variables (Required)
+
+- `BASE_URL` - Home Assistant URL (required)
+- `CF_CLIENT_ID` - Cloudflare Access client ID (required)
+- `CF_CLIENT_SECRET` - Cloudflare Access secret (required)
+- `NOT_VERIFY_SSL` - Disable SSL verification (optional)
+- `DEBUG` - Enable debug logging (optional)
+
+## Development Workflow
+
+Before committing:
+```bash
+make format      # black + ruff
+make lint        # ruff check
+make type-check  # mypy
+make test        # pytest
+```
+
+## Common Mistakes to Avoid
+
+❌ Using `assert` for validation
+❌ Missing type hints
+❌ Logging sensitive data
+❌ Using `Union[]` or `Optional[]` instead of `|`
+❌ Mutable dataclasses
+❌ `.format()` instead of f-strings
+❌ Bare `except:` clauses
+❌ Hardcoded credentials
+

@@ -1,0 +1,264 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ha-alexa"
+version = "0.1.0"
+description = "AWS Lambda functions for Alexa-Home Assistant integration"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Trevor Baker"},
+]
+keywords = ["alexa", "home-assistant", "aws", "lambda", "smart-home"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "urllib3>=2.0.0,<3.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["alexa_smart_home_handler", "alexa_oauth_handler", "alexa_authorize_handler", "parameter_store"]
+
+[project.optional-dependencies]
+dev = [
+    # Type checking
+    "mypy>=1.8.0",
+    
+    # Linting and formatting
+    "ruff>=0.1.0",
+    "black>=23.12.0",
+    
+    # Testing
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    
+    # Type stubs
+    "types-urllib3>=1.26.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/tjbaker/ha-alexa"
+Repository = "https://github.com/tjbaker/ha-alexa"
+Issues = "https://github.com/tjbaker/ha-alexa/issues"
+
+# =============================================================================
+# Mypy Configuration
+# =============================================================================
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+strict_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_unimported = false
+disallow_any_explicit = false
+disallow_any_generics = true
+disallow_subclassing_any = true
+no_implicit_optional = true
+no_implicit_reexport = true
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+
+# Per-module options
+[[tool.mypy.overrides]]
+module = "urllib3.*"
+ignore_missing_imports = true
+
+# =============================================================================
+# Ruff Configuration (replaces flake8, isort, pylint, etc.)
+# =============================================================================
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+indent-width = 4
+
+# Include Python files
+extend-include = ["*.py"]
+
+# Exclude common directories
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "venv",
+]
+
+[tool.ruff.lint]
+# Enable comprehensive rule sets
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "D",      # pydocstyle
+    "UP",     # pyupgrade
+    "ANN",    # flake8-annotations
+    "ASYNC",  # flake8-async
+    "S",      # flake8-bandit (security)
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "COM",    # flake8-commas
+    "C4",     # flake8-comprehensions
+    "DTZ",    # flake8-datetimez
+    "T10",    # flake8-debugger
+    "EM",     # flake8-errmsg
+    "EXE",    # flake8-executable
+    "ISC",    # flake8-implicit-str-concat
+    "ICN",    # flake8-import-conventions
+    "G",      # flake8-logging-format
+    "INP",    # flake8-no-pep420
+    "PIE",    # flake8-pie
+    "T20",    # flake8-print
+    "PYI",    # flake8-pyi
+    "PT",     # flake8-pytest-style
+    "Q",      # flake8-quotes
+    "RSE",    # flake8-raise
+    "RET",    # flake8-return
+    "SLF",    # flake8-self
+    "SLOT",   # flake8-slots
+    "SIM",    # flake8-simplify
+    "TID",    # flake8-tidy-imports
+    "TCH",    # flake8-type-checking
+    "ARG",    # flake8-unused-arguments
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate
+    "PL",     # pylint
+    "TRY",    # tryceratops
+    "FLY",    # flynt
+    "PERF",   # perflint
+    "RUF",    # ruff-specific rules
+]
+
+ignore = [
+    "D203",    # one-blank-line-before-class (conflicts with D211)
+    "D213",    # multi-line-summary-second-line (conflicts with D212)
+    "COM812",  # trailing-comma-missing (conflicts with formatter)
+    "ISC001",  # single-line-implicit-string-concatenation (conflicts with formatter)
+    "TRY003",  # avoid-specifying-long-messages-outside-exception-class
+    "TRY301",  # abstract-raise-to-inner-function (too strict)
+    "EM101",   # exception-must-not-use-string-literal
+    "EM102",   # exception-must-not-use-f-string-literal
+    "G004",    # logging-f-string (we prefer f-strings for readability)
+    "TRY300",  # try-consider-else
+    "PLR2004", # magic-value-comparison
+    "PLC0415", # import-outside-toplevel (needed for copy.deepcopy)
+    "S105",    # hardcoded-password-string (too many false positives)
+    "ARG001",  # unused-function-argument (context is required by Lambda)
+    "ARG002",  # unused-method-argument (fixtures in tests)
+    "ANN401",  # any-type (context and mocker are intentionally Any)
+    "D101",    # missing-docstring-in-public-class
+    "D102",    # missing-docstring-in-public-method
+    "D103",    # missing-docstring-in-public-function
+]
+
+# Allow fix for all enabled rules (when `--fix` is provided)
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["D104"]  # Missing docstring in public package
+"tests/*" = ["S101", "ANN401"]  # Allow assert and Any in tests
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["alexa_smart_home_handler", "alexa_oauth_handler"]
+force-single-line = false
+lines-after-imports = 2
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# =============================================================================
+# Black Configuration
+# =============================================================================
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # Default excludes
+  \.git
+  | \.mypy_cache
+  | \.ruff_cache
+  | \.venv
+  | venv
+  | build
+  | dist
+)/
+'''
+
+# =============================================================================
+# Pytest Configuration
+# =============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=.",
+    "--cov-report=term-missing",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow tests",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "venv/*",
+    ".venv/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+

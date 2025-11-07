@@ -1,0 +1,320 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Home Assistant Alexa Integration
+  
+  AWS Lambda functions that bridge Amazon Alexa Smart Home Skills with Home Assistant.
+
+Parameters:
+  HomeAssistantUrl:
+    Type: String
+    Description: Your Home Assistant base URL (e.g., https://ha.example.com)
+  
+  CloudflareClientId:
+    Type: String
+    Description: Cloudflare Access service token client ID
+    NoEcho: true
+  
+  CloudflareClientSecret:
+    Type: String
+    Description: Cloudflare Access service token client secret
+    NoEcho: true
+  
+  AlexaSkillId:
+    Type: String
+    Description: Your Alexa Skill ID (found in Alexa Developer Console under "Skill ID")
+    AllowedPattern: '^amzn1\.ask\.skill\.[a-f0-9-]+$'
+    ConstraintDescription: Must be a valid Alexa Skill ID (e.g., amzn1.ask.skill.xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+  
+  VerifySSL:
+    Type: String
+    Description: Set to 'false' to disable SSL verification (not recommended for production)
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  
+  DebugMode:
+    Type: String
+    Description: Enable debug logging
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  
+  LogRetentionDays:
+    Type: Number
+    Description: CloudWatch Logs retention in days for Lambda log groups
+    Default: 14
+  
+  ManageLogGroups:
+    Type: String
+    Description: Create/own log groups in this stack (set true only on fresh deploys)
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  
+  AlexaVendorId:
+    Type: String
+    Description: Your Alexa Vendor ID (used to validate redirect URIs)
+    AllowedPattern: '^[A-Z0-9]+$'
+  
+  OAuthJwtSecret:
+    Type: String
+    Description: Secret used to sign short-lived authorization JWTs (stored in Parameter Store)
+    NoEcho: true
+
+Conditions:
+  DisableSSLVerification: !Equals [!Ref VerifySSL, 'false']
+  EnableDebugMode: !Equals [!Ref DebugMode, 'true']
+  ShouldManageLogGroups: !Equals [!Ref ManageLogGroups, 'true']
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures:
+      - arm64
+    Timeout: 10
+    MemorySize: 128
+
+Resources:
+  # Parameter Store for sensitive values (always created)
+  CloudflareClientIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/ha-alexa/${AWS::StackName}/cloudflare-client-id'
+      Description: Cloudflare Access service token client ID
+      Type: String
+      Value: !Ref CloudflareClientId
+      Tags:
+        Application: home-assistant-alexa
+
+  CloudflareClientSecretParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/ha-alexa/${AWS::StackName}/cloudflare-client-secret'
+      Description: Cloudflare Access service token client secret
+      Type: SecureString
+      Value: !Ref CloudflareClientSecret
+      Tags:
+        Application: home-assistant-alexa
+
+  OAuthJwtSecretParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/ha-alexa/${AWS::StackName}/oauth-jwt-secret'
+      Description: Secret for signing/verifying JWT authorization codes
+      Type: SecureString
+      Value: !Ref OAuthJwtSecret
+      Tags:
+        Application: home-assistant-alexa
+
+  # IAM policy for Parameter Store access (read-only, least privilege)
+  ParameterStoreAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow Lambda functions to read ha-alexa parameters from Parameter Store
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Allow reading parameters (read-only)
+          - Sid: ReadParameterStore
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ha-alexa/${AWS::StackName}/*'
+          
+          # Explicitly deny modifying or deleting parameters
+          - Sid: DenyParameterModification
+            Effect: Deny
+            Action:
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:DeleteParameters
+            Resource: '*'
+          
+          # Allow KMS decryption only via SSM service
+          - Sid: AllowKMSDecryptViaSSM
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'ssm.${AWS::Region}.amazonaws.com'
+
+  AlexaSmartHomeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: alexa-smart-home
+      Handler: alexa_smart_home_handler.lambda_handler
+      CodeUri: .
+      Description: Handles Alexa Smart Home directives and forwards to Home Assistant
+      Environment:
+        Variables:
+          BASE_URL: !Ref HomeAssistantUrl
+          CF_CLIENT_ID: !Ref CloudflareClientIdParameter
+          CF_CLIENT_SECRET: !Ref CloudflareClientSecretParameter
+          NOT_VERIFY_SSL: !If [DisableSSLVerification, '1', !Ref 'AWS::NoValue']
+          DEBUG: !If [EnableDebugMode, '1', !Ref 'AWS::NoValue']
+      Policies:
+        - !Ref ParameterStoreAccessPolicy
+      Tags:
+        Application: home-assistant-alexa
+        Component: smart-home-handler
+
+  AlexaSmartHomePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AlexaSmartHomeFunction
+      Action: lambda:InvokeFunction
+      Principal: alexa-connectedhome.amazon.com
+      EventSourceToken: !Ref AlexaSkillId
+
+  AlexaOAuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: alexa-oauth
+      Handler: alexa_oauth_handler.lambda_handler
+      CodeUri: .
+      Description: Handles OAuth token exchange for Alexa account linking
+      Environment:
+        Variables:
+          BASE_URL: !Ref HomeAssistantUrl
+          CF_CLIENT_ID: !Ref CloudflareClientIdParameter
+          CF_CLIENT_SECRET: !Ref CloudflareClientSecretParameter
+          OAUTH_JWT_SECRET: !Ref OAuthJwtSecretParameter
+          NOT_VERIFY_SSL: !If [DisableSSLVerification, '1', !Ref 'AWS::NoValue']
+          DEBUG: !If [EnableDebugMode, '1', !Ref 'AWS::NoValue']
+      Policies:
+        - !Ref ParameterStoreAccessPolicy
+      Tags:
+        Application: home-assistant-alexa
+        Component: oauth-handler
+
+  AlexaOAuthFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt AlexaOAuthFunction.Arn
+      AuthType: NONE
+      Cors:
+        AllowOrigins:
+          - https://alexa.amazon.com
+          - https://layla.amazon.com
+          - https://alexa.amazon.co.jp
+          - https://pitangui.amazon.com
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 86400
+
+  AlexaAuthorizeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: alexa-authorize
+      Handler: alexa_authorize_handler.lambda_handler
+      CodeUri: .
+      Description: Authorization endpoint for Alexa account linking
+      Environment:
+        Variables:
+          BASE_URL: !Ref HomeAssistantUrl
+          ALEXA_VENDOR_ID: !Ref AlexaVendorId
+          OAUTH_JWT_SECRET: !Ref OAuthJwtSecretParameter
+          DEBUG: !If [EnableDebugMode, '1', !Ref 'AWS::NoValue']
+      Policies:
+        - !Ref ParameterStoreAccessPolicy
+      Tags:
+        Application: home-assistant-alexa
+        Component: authorize-handler
+
+  AlexaAuthorizeFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt AlexaAuthorizeFunction.Arn
+      AuthType: NONE
+      Cors:
+        AllowOrigins:
+          - https://alexa.amazon.com
+          - https://layla.amazon.com
+          - https://alexa.amazon.co.jp
+          - https://pitangui.amazon.com
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 86400
+
+  AlexaOAuthFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AlexaOAuthFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  AlexaAuthorizeFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AlexaAuthorizeFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  AlexaSmartHomeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldManageLogGroups
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AlexaSmartHomeFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  AlexaOAuthLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldManageLogGroups
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AlexaOAuthFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  AlexaAuthorizeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldManageLogGroups
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AlexaAuthorizeFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+Outputs:
+  AlexaSmartHomeFunctionArn:
+    Description: ARN of the Alexa Smart Home Lambda function (use this in Alexa Developer Console)
+    Value: !GetAtt AlexaSmartHomeFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SmartHomeFunctionArn'
+  
+  AlexaOAuthFunctionUrl:
+    Description: Function URL for OAuth handler (use this as Access Token URI in Alexa Developer Console)
+    Value: !GetAtt AlexaOAuthFunctionUrl.FunctionUrl
+  
+  AlexaOAuthFunctionArn:
+    Description: ARN of the Alexa OAuth Lambda function
+    Value: !GetAtt AlexaOAuthFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-OAuthFunctionArn'
+  
+  AlexaAuthorizeFunctionUrlOutput:
+    Description: Function URL for Authorization endpoint (use as Authorization URI in Alexa Developer Console)
+    Value: !GetAtt AlexaAuthorizeFunctionUrl.FunctionUrl
+  
+  AlexaSmartHomeFunctionName:
+    Description: Name of the Alexa Smart Home Lambda function
+    Value: !Ref AlexaSmartHomeFunction
+  
+  AlexaOAuthFunctionName:
+    Description: Name of the Alexa OAuth Lambda function
+    Value: !Ref AlexaOAuthFunction
+
