@@ -38,6 +38,25 @@ except ImportError:
     sys.exit(1)
 
 
+# Parameter Store path constants
+PARAM_CF_CLIENT_ID = "cloudflare-client-id"
+PARAM_CF_CLIENT_SECRET = "cloudflare-client-secret"
+PARAM_OAUTH_JWT_SECRET = "oauth-jwt-secret"
+
+
+def get_param_path(stack_name: str, param_name: str) -> str:
+    """Generate consistent parameter path for Parameter Store.
+
+    Args:
+        stack_name: CloudFormation stack name
+        param_name: Parameter identifier (e.g., 'cloudflare-client-id')
+
+    Returns:
+        Full parameter path (e.g., '/ha-alexa/cloudflare-client-id')
+    """
+    return f"/{stack_name}/{param_name}"
+
+
 def load_samconfig_defaults() -> dict[str, str]:
     """Load default values from samconfig.toml if it exists."""
     defaults: dict[str, str] = {}
@@ -114,9 +133,9 @@ def create_secure_parameter(ssm: "boto3.client", name: str, value: str, descript
 def delete_parameters(ssm: "boto3.client", stack_name: str) -> None:
     """Delete all parameters for a stack."""
     param_names = [
-        f"/{stack_name}/cloudflare-client-id",
-        f"/{stack_name}/cloudflare-client-secret",
-        f"/{stack_name}/oauth-jwt-secret",
+        get_param_path(stack_name, PARAM_CF_CLIENT_ID),
+        get_param_path(stack_name, PARAM_CF_CLIENT_SECRET),
+        get_param_path(stack_name, PARAM_OAUTH_JWT_SECRET),
     ]
 
     print(f"\n🗑️  Deleting Parameter Store parameters for stack '{stack_name}'...")
@@ -143,7 +162,7 @@ def main() -> None:
         print("📖 Loaded defaults from samconfig.toml\n")
 
     # Check if user wants to delete
-    action = prompt("Action", "deploy").lower()
+    action = prompt("Action (deploy/delete)", "deploy").lower()
     if action == "delete":
         stack_name = prompt("Stack name", defaults.get("stack_name", "ha-alexa"))
         region = prompt("AWS Region", defaults.get("region", "us-east-1"))
@@ -250,7 +269,7 @@ def main() -> None:
 
     create_secure_parameter(
         ssm,
-        f"/{stack_name}/cloudflare-client-id",
+        get_param_path(stack_name, PARAM_CF_CLIENT_ID),
         cf_client_id,
         f"Cloudflare Access service token client ID "
         f"(used by {stack_name} Lambdas: alexa-smart-home, alexa-oauth)",
@@ -258,7 +277,7 @@ def main() -> None:
 
     create_secure_parameter(
         ssm,
-        f"/{stack_name}/cloudflare-client-secret",
+        get_param_path(stack_name, PARAM_CF_CLIENT_SECRET),
         cf_client_secret,
         f"Cloudflare Access service token client secret "
         f"(used by {stack_name} Lambdas: alexa-smart-home, alexa-oauth)",
@@ -266,7 +285,7 @@ def main() -> None:
 
     create_secure_parameter(
         ssm,
-        f"/{stack_name}/oauth-jwt-secret",
+        get_param_path(stack_name, PARAM_OAUTH_JWT_SECRET),
         oauth_jwt_secret,
         f"Secret for signing/verifying JWT authorization codes "
         f"(used by {stack_name} Lambdas: alexa-authorize, alexa-oauth)",
@@ -291,11 +310,11 @@ def main() -> None:
         region,
         "--parameter-overrides",
         f"HomeAssistantUrl={ha_url}",
-        f"CloudflareClientId=/{stack_name}/cloudflare-client-id",
-        f"CloudflareClientSecret=/{stack_name}/cloudflare-client-secret",
+        f"CloudflareClientId={get_param_path(stack_name, PARAM_CF_CLIENT_ID)}",
+        f"CloudflareClientSecret={get_param_path(stack_name, PARAM_CF_CLIENT_SECRET)}",
         f"AlexaSkillId={alexa_skill_id}",
         f"AlexaVendorId={alexa_vendor_id}",
-        f"OAuthJwtSecret=/{stack_name}/oauth-jwt-secret",
+        f"OAuthJwtSecret={get_param_path(stack_name, PARAM_OAUTH_JWT_SECRET)}",
         f"VerifySSL={verify_ssl}",
         f"DebugMode={debug_mode}",
         "--capabilities",
