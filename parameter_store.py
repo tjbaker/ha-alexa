@@ -48,7 +48,7 @@ def get_parameter(param_name: str) -> str:
 
     # Fetch from Parameter Store
     try:
-        import boto3  # type: ignore[import-not-found]  # boto3 is available in Lambda runtime
+        import boto3  # boto3 is available in Lambda runtime
 
         ssm = boto3.client("ssm")
         logger.info(f"Fetching parameter from SSM: {param_name}")
