@@ -95,7 +95,7 @@ Resources:
     Properties:
       Name: !Sub '/ha-alexa/${AWS::StackName}/cloudflare-client-secret'
       Description: Cloudflare Access service token client secret
-      Type: SecureString
+      Type: String
       Value: !Ref CloudflareClientSecret
       Tags:
         Application: home-assistant-alexa
@@ -105,7 +105,7 @@ Resources:
     Properties:
       Name: !Sub '/ha-alexa/${AWS::StackName}/oauth-jwt-secret'
       Description: Secret for signing/verifying JWT authorization codes
-      Type: SecureString
+      Type: String
       Value: !Ref OAuthJwtSecret
       Tags:
         Application: home-assistant-alexa
