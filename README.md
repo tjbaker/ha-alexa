@@ -533,6 +533,21 @@ Contributions welcome! Please ensure:
 4. Type checking passes (`make type-check`)
 5. Coverage remains above 90%
 
+## Support This Project
+
+If you find this integration useful and want to say thanks, you can send me some USDC to grab a cup of coffee! ☕ Your support helps keep this project maintained and updated with new features.
+
+**💙 USDC on Base Network**
+
+<p align="center">
+  <img src=".github/donations.png" width="200" alt="Base USDC QR Code" />
+</p>
+
+**Address**: `0x7CC11505c5fBb8FB0c52d2f63fd9A44763246397`  
+**Network**: Base (not Ethereum mainnet)
+
+*Completely optional! This project is and will always be free and open source.* ❤️
+
 ## References
 
 - **[Home Assistant Alexa Integration](https://www.home-assistant.io/integrations/alexa/)** - Official HA Alexa documentation
