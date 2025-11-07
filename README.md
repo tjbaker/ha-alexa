@@ -1,8 +1,50 @@
 # Home Assistant Alexa Integration
 
-AWS Lambda solution for integrating Amazon Alexa Smart Home Skills with self-hosted Home Assistant. Features stateless OAuth account linking and secure authentication via Cloudflare Access.
+[![CI](https://github.com/tjbaker/ha-alexa/workflows/CI/badge.svg)](https://github.com/tjbaker/ha-alexa/actions)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 
-**Note**: This requires AWS Lambda, Cloudflare Tunnel, and technical knowledge. Setup takes 30-45 minutes. For a simpler approach, consider [Nabu Casa Cloud](https://www.nabucasa.com/).
+**Control your self-hosted Home Assistant with Amazon Alexa—without a subscription.**
+
+## Table of Contents
+
+- [What Is This?](#what-is-this)
+- [Why Does This Exist?](#why-does-this-exist)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+  - [Clone Repository](#1-clone-repository)
+  - [Setup Virtual Environment](#2-setup-virtual-environment-development)
+  - [Deploy to AWS Lambda](#3-deploy-to-aws-lambda)
+- [Cloudflare Tunnel Setup](#cloudflare-tunnel-setup)
+- [Configure Alexa Skill](#configure-alexa-skill)
+- [Home Assistant Configuration](#home-assistant-configuration)
+- [Enable Skill and Link Account](#enable-skill-and-link-account)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Security Considerations](#security-considerations)
+- [Contributing](#contributing)
+- [Support This Project](#support-this-project)
+- [References](#references)
+- [License](#license)
+
+## What Is This?
+
+This project enables **native Alexa Smart Home integration** for self-hosted Home Assistant installations. Say "Alexa, turn on the living room lights" and control your HA devices directly through Amazon's official Smart Home API.
+
+## Why Does This Exist?
+
+Self-hosted Home Assistant needs a publicly accessible endpoint with OAuth 2.0, HTTPS, and complex security to talk to Alexa's cloud services. While subscription services exist, this project provides a **free, open-source alternative** where you maintain complete control:
+
+- ✅ **Your infrastructure** - AWS Lambda and Cloudflare Tunnel under your account
+- ✅ **Your data** - Commands flow through your own servers, not a third party
+- ✅ **Your security** - You decide encryption, access controls, and audit logging
+- ✅ **Your privacy** - No vendor can monetize, analyze, or share your usage patterns
+- ⚠️ **Your responsibility** - You handle setup, updates, and troubleshooting
+
+**Best for:** Self-hosters who want to learn AWS infrastructure, prefer no subscriptions, or are already running Cloudflare Tunnel.
 
 ## Features
 
@@ -10,16 +52,22 @@ AWS Lambda solution for integrating Amazon Alexa Smart Home Skills with self-hos
 - **Stateless OAuth** - JWT-based authorization flow
 - **Zero-Trust Security** - Cloudflare Access authentication for all Home Assistant requests
 - **Token Sanitization** - Automatic redaction of sensitive data in logs
-- **AWS Parameter Store** - Free, encrypted secret storage
-- **Python 3.13** - Modern syntax with 100% type hints, 133 tests, 95% coverage
+- **Encrypted Secrets** - SecureString storage in AWS Parameter Store with KMS encryption
 
 ## Prerequisites
 
-- Python 3.13+ (for development)
-- AWS Account with Lambda access and configured credentials
+### Deployment Requirements
+
+- Python 3.13+ (for running deployment script)
+- AWS Account
 - Self-hosted Home Assistant with Alexa integration
-- Cloudflare Account (free tier) with custom domain
+- Cloudflare Account (free tier)
+- Domain or subdomain you control (e.g., `homeassistant.yourdomain.com`)
 - AWS SAM CLI
+
+### Development Requirements (Optional)
+
+- Development dependencies (`pip install -e ".[dev]"`) - for linting, testing, type checking
 
 ## Quick Start
 
@@ -48,56 +96,70 @@ pip install -e ".[dev]"
 
 ### 3. Deploy to AWS Lambda
 
-Install AWS SAM CLI:
+**Prerequisites:**
+- AWS SAM CLI installed (`brew install aws-sam-cli`)
+- AWS credentials configured (`aws configure`)
+- Cloudflare Access service token (complete [Cloudflare Tunnel Setup](#cloudflare-tunnel-setup) first)
+
+**Why a Custom Deployment Script?**
+
+This project uses `deploy.py` instead of `sam deploy --guided` for maximum security:
+
+**The Problem:** CloudFormation's `AWS::SSM::Parameter` resource type only supports `Type: String`, not `Type: SecureString`. This means:
+- ❌ Secrets stored as plain text in Parameter Store
+- ❌ Secrets visible in AWS console
+- ❌ Secrets logged in CloudFormation events/change sets
+
+**The Solution:** Our `deploy.py` script:
+- ✅ Creates parameters **externally** as `SecureString` with KMS encryption
+- ✅ Secrets never visible in AWS console (encrypted at rest)
+- ✅ Secrets never logged in CloudFormation
+- ✅ CloudFormation only receives **parameter paths**, not values
 
 ```bash
-# macOS
-brew install aws-sam-cli
-
-# Verify
-sam --version
+# Run the secure deployment script
+python3 deploy.py
 ```
 
-Build and deploy:
+The script will prompt you for:
+- **Stack name** (default: `ha-alexa`) - loaded from `samconfig.toml` if exists
+- **AWS Region** (default: `us-east-1`)
+- **Home Assistant URL** (e.g., `https://homeassistant.yourdomain.com`)
+- **Alexa Skill ID** (`amzn1.ask.skill.xxx` - get from Alexa Developer Console)
+- **Alexa Vendor ID** (extracted from Alexa redirect URIs, see below)
+- **Verify SSL** (default: `true`)
+- **Debug Mode** (default: `false`)
+- **Cloudflare Client ID** (secret - not echoed)
+- **Cloudflare Client Secret** (secret - not echoed)
+- **OAuth JWT Secret** (secret - generate with `openssl rand -base64 32`)
 
+**💡 Tip:** On subsequent deployments, the script loads defaults from `samconfig.toml` - just press Enter to accept existing values and only re-enter the 3 secrets.
+
+The script will:
+1. **Create SecureString parameters** in Parameter Store with KMS encryption
+2. **Build** the Lambda package with `sam build`
+3. **Deploy** the CloudFormation stack with `sam deploy`
+4. **Display** the function URLs you need for Alexa configuration
+
+**View deployment outputs:**
 ```bash
-# Build Lambda package
-sam build
-
-# Deploy (interactive first time)
-sam deploy --guided
+sam list stack-outputs --stack-name ha-alexa
 ```
 
-During `sam deploy --guided`, provide:
-- **Stack name**: `ha-alexa`
-- **AWS Region**: `us-east-1` (or your preferred region)
-- **HomeAssistantUrl**: Your HA URL (e.g., `https://ha.example.com`)
-- **CloudflareClientId**: Service token client ID (from Cloudflare Access)
-- **CloudflareClientSecret**: Service token client secret
-- **AlexaSkillId**: `amzn1.ask.skill.xxx` (create skill first, then redeploy)
-- **AlexaVendorId**: Get from Alexa Developer Console > Your Skill > Account Linking section (see note below)
-- **OAuthJwtSecret**: Random string (`openssl rand -base64 32`)
-- **VerifySSL**: `true` (recommended)
-- **DebugMode**: `false`
-- **Confirm changes**: `Y`
-- **Allow SAM CLI IAM role creation**: `Y`
-- **Save to configuration file**: `Y`
-
-After successful deployment, SAM will display the CloudFormation stack outputs. Save these values:
-- `AlexaSmartHomeFunctionArn` - Use this as the Alexa skill endpoint
-- `AlexaAuthorizeFunctionUrlOutput` - Use this as the Authorization URI
-- `AlexaOAuthFunctionUrl` - Use this as the Access Token URI
-
-You can view outputs anytime with: `sam list stack-outputs --stack-name ha-alexa`
+**To delete everything:**
+```bash
+python3 deploy.py  # Choose "delete" when prompted
+sam delete --stack-name ha-alexa
+```
 
 ## Cloudflare Tunnel Setup
 
 <details>
 <summary>Click to expand Cloudflare setup instructions</summary>
 
-### Recommended: Home Assistant Add-on (Easiest)
+### Install Cloudflare Tunnel
 
-**For Home Assistant OS or Supervised:**
+**For Home Assistant OS or Supervised (Recommended):**
 
 1. **Install Add-on**
    - Settings > Add-ons > Add-on Store
@@ -113,35 +175,9 @@ You can view outputs anytime with: `sam list stack-outputs --stack-name ha-alexa
    - In Cloudflare dashboard, point your domain to the tunnel
    - Example: `homeassistant.yourdomain.com` → your tunnel
 
-### Alternative: Manual Installation (Container/Core)
+**Note:** Alternative installation methods exist for Home Assistant Container/Core (manual `cloudflared` installation), but are not included here for brevity. See [Cloudflare Tunnel documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) for manual setup options.
 
-**For Home Assistant Container or Core:**
-
-```bash
-# Install cloudflared
-curl -L --output cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x cloudflared
-sudo mv cloudflared /usr/local/bin/
-
-# Create tunnel
-cloudflared tunnel login
-cloudflared tunnel create ha-tunnel
-cloudflared tunnel route dns ha-tunnel homeassistant.yourdomain.com
-
-# Configure (create /etc/cloudflared/config.yml)
-tunnel: <tunnel-id>
-credentials-file: /root/.cloudflared/<tunnel-id>.json
-ingress:
-  - hostname: homeassistant.yourdomain.com
-    service: http://localhost:8123
-  - service: http_status:404
-
-# Start service
-sudo cloudflared service install
-sudo systemctl start cloudflared
-```
-
-### Setup Cloudflare Access (Required for Both Methods)
+### Setup Cloudflare Access (Required)
 
 In Cloudflare Zero Trust dashboard:
 
@@ -231,9 +267,13 @@ Copy the text after `/link/` (e.g., `ABCD1234EFGH`) - this is your **AlexaVendor
 
 ## Home Assistant Configuration
 
-Update `configuration.yaml`:
+Add or update the following sections in your `configuration.yaml`:
 
 ```yaml
+# Core Configuration
+homeassistant:
+  external_url: https://homeassistant.yourdomain.com
+
 # HTTP Configuration
 http:
   use_x_forwarded_for: true
@@ -260,10 +300,6 @@ http:
     - https://pitangui.amazon.com
     - https://alexa.amazon.co.jp
 
-# External URL
-homeassistant:
-  external_url: https://homeassistant.yourdomain.com
-
 # Alexa Integration
 alexa:
   smart_home:
@@ -280,7 +316,9 @@ Restart Home Assistant.
 5. After linking completes, Alexa will automatically discover all supported devices
 
 **Supported Device Types:**
-- Lights (on/off, brightness, color)
+
+This integration forwards all requests to Home Assistant's native Alexa integration, which supports:
+- **Lights** (on/off, brightness, color) - ✅ Tested
 - Switches
 - Fans (on/off, speed)
 - Climate/Thermostats (temperature, mode)
@@ -290,6 +328,8 @@ Restart Home Assistant.
 - Scripts
 - Media Players
 - Sensors (temperature, contact, motion - for routines)
+
+See [Home Assistant Alexa documentation](https://www.home-assistant.io/integrations/alexa/) for complete device support details.
 
 You can also manually trigger discovery by saying "Alexa, discover devices" or through the Alexa app (Devices > + > Add Device > Other).
 
@@ -331,7 +371,7 @@ Three Lambda functions work together to provide a complete Alexa Smart Home inte
 - Exchanges the embedded HA code for access/refresh tokens
 - Returns tokens to Alexa for storage
 
-**Security**: All sensitive values (Cloudflare credentials, JWT secrets) are stored in AWS Parameter Store (free, encrypted).
+**Security**: All sensitive values (Cloudflare credentials, JWT secrets) are stored as SecureString in AWS Parameter Store with KMS encryption (free tier).
 
 ### System Overview
 
@@ -353,39 +393,7 @@ flowchart LR
     CF -->|Proxy| HA
 ```
 
-### 1. Account Linking Flow (One-Time Setup)
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Alexa
-    participant AuthLambda
-    participant TokenLambda
-    participant CF as Cloudflare Access
-    participant HA as Home Assistant
-    
-    User->>Alexa: Enable skill in app
-    Alexa->>AuthLambda: GET /authorize?redirect_uri=...
-    AuthLambda->>AuthLambda: Generate state
-    AuthLambda-->>User: Redirect to HA login
-    User->>CF: Access HA
-    CF->>CF: Verify email (Allow policy)
-    CF->>HA: Forward to /auth/authorize
-    User->>HA: Enter HA credentials
-    HA-->>AuthLambda: Redirect with HA auth code
-    AuthLambda->>AuthLambda: Create JWT with HA code
-    AuthLambda-->>Alexa: Redirect with JWT code
-    Alexa->>TokenLambda: POST /token (exchange JWT)
-    TokenLambda->>TokenLambda: Verify & extract JWT
-    TokenLambda->>CF: Exchange HA code for token
-    CF->>CF: Verify service token (Bypass policy)
-    CF->>HA: Forward to /auth/token
-    HA-->>TokenLambda: Return access token
-    TokenLambda-->>Alexa: Return access token
-    Alexa->>User: Account linked!
-```
-
-### 2. Smart Home Command Flow (Daily Usage)
+### Smart Home Command Flow
 
 ```mermaid
 sequenceDiagram
@@ -426,23 +434,10 @@ make clean          # Remove build artifacts
 
 ### Code Quality
 
-- **Type Checking**: mypy with strict mode, 100% coverage
+- **Type Checking**: mypy with strict mode, 100% type coverage
 - **Linting**: Ruff (50+ rule sets) + Black
 - **Testing**: pytest with pytest-cov, pytest-mock
-- **Coverage**: 95% overall, 133 tests
-
-### Local Testing
-
-```bash
-# Test with SAM local invoke
-sam local invoke AlexaSmartHomeFunction -e events/alexa-discovery.json
-
-# Run unit tests
-pytest -v
-
-# With coverage
-pytest --cov-report=term-missing
-```
+- **Coverage**: Comprehensive test suite with >90% coverage
 
 ## Troubleshooting
 
@@ -480,15 +475,20 @@ sam logs --stack-name ha-alexa --name alexa-authorize --tail
 sam logs --stack-name ha-alexa --name alexa-oauth --tail
 ```
 
-**Debug Mode**: Enable detailed logging to see complete Alexa directives and HTTP requests. With debug mode:
-- View complete Alexa directives (device IDs, commands, parameters)
-- See full HTTP requests/responses to Home Assistant
-- Track OAuth flow step-by-step
+**Debug Mode**: Enable detailed logging across Lambda functions and Home Assistant to troubleshoot the complete request flow.
+
+#### Lambda Debug Logging
+
+Enable debug logging in Lambda functions to see:
+- Complete Alexa directives (device IDs, commands, parameters)
+- Full HTTP requests/responses to Home Assistant
+- OAuth flow step-by-step
 - All sensitive tokens are still automatically sanitized
 
-**Option 1: Via SAM deployment**
+**Option 1: Via deployment script (recommended)**
 ```bash
-sam deploy --parameter-overrides DebugMode=true
+python3 deploy.py
+# When prompted for "Enable debug mode", enter: true
 ```
 
 **Option 2: Directly in Lambda console**
@@ -498,22 +498,150 @@ sam deploy --parameter-overrides DebugMode=true
 - Add variable: `DEBUG` = `1`
 - Save and repeat for other functions as needed
 
+#### Home Assistant Debug Logging
+
+Enable debug logging in Home Assistant to see:
+- Incoming Alexa directives (device commands, discovery requests)
+- Entity state mapping and capability reporting
+- OAuth token validation and exchange
+- Device discovery filtering and entity selection
+
+Add to your `configuration.yaml`:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    homeassistant.components.alexa: debug
+    homeassistant.components.auth: debug  # Optional: for OAuth/token debugging
+```
+
+Then reload the logger (no restart needed):
+```bash
+Developer Tools > YAML > Reload Logger
+# Or via CLI: ha core logs -f
+```
+
+### Example 1: Skill Linking Flow (One-Time Setup)
+
+When you enable the Alexa skill and link your account, here's the complete flow:
+
+**Step 1: Initial Authorization (alexa-authorize)** - ~6 seconds
+```
+[DEBUG] Authorize request: client_id=https://...lambda-url.us-east-1.on.aws, 
+        redirect_uri=https://pitangui.amazon.com/api/skill/link/MQTX68E7NM4GF, 
+        scope=smart_home, response_type=code
+[DEBUG] Redirecting to HA authorize endpoint: base=https://homeassistant.yourdomain.com
+[INFO]  Redirecting user to Home Assistant authorize endpoint
+```
+
+**Step 2: User Authorizes with Home Assistant**
+- User enters Home Assistant credentials
+- Home Assistant validates and redirects back to Lambda with authorization code
+
+**Step 3: Authorization Callback (alexa-authorize)** - ~5ms
+```
+[DEBUG] Authorize request: code=[REDACTED], state=...
+[DEBUG] Authorization completed; redirecting back to Alexa: redirect_uri=https://pitangui.amazon.com/...
+[INFO]  Authorization completed; redirecting back to Alexa
+```
+
+**Step 4: Token Exchange (alexa-oauth)** - ~5 seconds
+```
+[DEBUG] Token request context: domain=...lambda-url.us-east-1.on.aws, method=POST
+[DEBUG] JWT unwrap successful
+[DEBUG] Added Cloudflare Access authentication
+[INFO]  Forwarding token request to https://homeassistant.yourdomain.com/auth/token
+[INFO]  Token exchange successful
+[DEBUG] Response: {'access_token': '[REDACTED]', 'token_type': '[REDACTED]', 
+         'refresh_token': '[REDACTED]', 'expires_in': 1800, 'ha_auth_provider': 'homeassistant'}
+```
+
+**Total account linking time: ~11 seconds**
+
+---
+
+### Example 2: Voice Command Flow (Daily Usage)
+
+When you say **"Alexa, turn off office desk light"**:
+
+**Lambda (alexa-smart-home)** - ~310ms
+```
+[DEBUG] Processing event: {
+  'directive': {
+    'header': {
+      'messageId': 'badadc0d-6f05-4824-9052-8a18c0f3bdab',
+      'namespace': 'Alexa.PowerController',
+      'name': 'TurnOff'
+    },
+    'endpoint': {
+      'endpointId': 'light#office_desk_light'
+    }
+  }
+}
+[DEBUG] Added Cloudflare Access authentication
+[INFO]  Forwarding request to https://homeassistant.yourdomain.com/api/alexa/smart_home
+```
+
+**Home Assistant** - ~300ms
+```
+[DEBUG] Received Alexa Smart Home request: {
+  'directive': {
+    'header': {'namespace': 'Alexa.PowerController', 'name': 'TurnOff'},
+    'endpoint': {'endpointId': 'light#office_desk_light'}
+  }
+}
+[DEBUG] Sending Alexa Smart Home response: {
+  'event': {'header': {'namespace': 'Alexa', 'name': 'Response'}},
+  'context': {
+    'properties': [
+      {'name': 'powerState', 'value': 'ON'},
+      {'name': 'brightness', 'value': 100},
+      {'name': 'connectivity', 'value': {'value': 'OK'}}
+    ]
+  }
+}
+```
+
+**Lambda Response** - ~60ms
+```
+[INFO]  Request completed successfully
+[DEBUG] Response: {
+  'event': {
+    'header': {'namespace': 'Alexa', 'name': 'Response'},
+    'endpoint': {'endpointId': 'light#office_desk_light'}
+  },
+  'context': {
+    'properties': [
+      {'name': 'powerState', 'value': 'ON'},
+      {'name': 'brightness', 'value': 100},
+      {'name': 'colorTemperatureInKelvin', 'value': 5263},
+      {'name': 'connectivity', 'value': {'value': 'OK'}}
+    ]
+  }
+}
+```
+
+**Total command latency: ~370ms** (0.37 seconds)
+
+**Note:** Home Assistant access tokens expire after **30 minutes** (1800 seconds). When the token expires, Alexa automatically refreshes it via the `alexa-oauth` Lambda before sending the next command (adds ~5 seconds to the first command only).
+
 ## Security Considerations
 
 ### Infrastructure Security
 
 - **Zero-Trust Architecture**: Entire Home Assistant subdomain protected by Cloudflare Access
 - **No Public Exposure**: Nothing accessible from internet without authentication
-- **Encrypted Secrets**: All credentials stored in AWS Parameter Store (encrypted with AWS KMS)
+- **Encrypted Secrets**: All credentials stored as SecureString in AWS Parameter Store with KMS encryption (never logged in CloudFormation)
 - **Service Token Authentication**: Lambda functions use Cloudflare service tokens for automated access
 
 ### IAM Hardening
 
-- **Least Privilege Access**: Lambda functions can only read parameters from `/ha-alexa/{stack-name}/*`
-- **Read-Only Policy**: Explicit deny prevents Lambda functions from modifying or deleting parameters
+- **Least Privilege Access**: Lambda functions can only read the three specific parameters they need (Cloudflare credentials, JWT secret)
+- **Read-Only Policy**: Explicit deny prevents Lambda functions from modifying or deleting any parameters
 - **KMS Restrictions**: Decryption only allowed via SSM service (prevents arbitrary KMS decrypt operations)
 - **Event Source Validation**: Smart Home function validates Alexa Skill ID before processing directives
-- **Resource Isolation**: Each stack deployment has isolated parameters (no cross-stack access)
+- **Resource Isolation**: Parameters are namespaced per stack (e.g., `/ha-alexa/cloudflare-client-id`)
 
 ### Application Security
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ha-alexa"
 version = "0.1.0"
-description = "AWS Lambda functions for Alexa-Home Assistant integration"
+description = "Self-hosted Alexa Smart Home integration for Home Assistant using AWS Lambda and Cloudflare Tunnel"
 readme = "README.md"
 requires-python = ">=3.13"
 license = {text = "Apache-2.0"}
@@ -43,8 +43,12 @@ dev = [
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
     
+    # Deployment
+    "boto3>=1.26.0",
+    
     # Type stubs
     "types-urllib3>=1.26.0",
+    "types-boto3>=1.0.2",
 ]
 
 [project.urls]
@@ -186,6 +190,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["D104"]  # Missing docstring in public package
 "tests/*" = ["S101", "ANN401"]  # Allow assert and Any in tests
+"deploy.py" = ["T201", "S603", "S607", "PLR0915", "PLR0912", "SIM108"]  # Allow print, subprocess, complexity in deployment script
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -248,6 +253,7 @@ omit = [
     "venv/*",
     ".venv/*",
     "*/site-packages/*",
+    "deploy.py",  # Deployment script - not production code
 ]
 
 [tool.coverage.report]

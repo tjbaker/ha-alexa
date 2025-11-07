@@ -12,13 +12,13 @@ Parameters:
   
   CloudflareClientId:
     Type: String
-    Description: Cloudflare Access service token client ID
-    NoEcho: true
+    Description: Parameter Store path for Cloudflare Access client ID (e.g., /ha-alexa/cloudflare-client-id)
+    Default: /ha-alexa/cloudflare-client-id
   
   CloudflareClientSecret:
     Type: String
-    Description: Cloudflare Access service token client secret
-    NoEcho: true
+    Description: Parameter Store path for Cloudflare Access client secret (e.g., /ha-alexa/cloudflare-client-secret)
+    Default: /ha-alexa/cloudflare-client-secret
   
   AlexaSkillId:
     Type: String
@@ -62,8 +62,8 @@ Parameters:
   
   OAuthJwtSecret:
     Type: String
-    Description: Secret used to sign short-lived authorization JWTs (stored in Parameter Store)
-    NoEcho: true
+    Description: Parameter Store path for OAuth JWT secret (e.g., /ha-alexa/oauth-jwt-secret)
+    Default: /ha-alexa/oauth-jwt-secret
 
 Conditions:
   DisableSSLVerification: !Equals [!Ref VerifySSL, 'false']
@@ -79,38 +79,8 @@ Globals:
     MemorySize: 128
 
 Resources:
-  # Parameter Store for sensitive values (always created)
-  CloudflareClientIdParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/ha-alexa/${AWS::StackName}/cloudflare-client-id'
-      Description: Cloudflare Access service token client ID
-      Type: String
-      Value: !Ref CloudflareClientId
-      Tags:
-        Application: home-assistant-alexa
-
-  CloudflareClientSecretParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/ha-alexa/${AWS::StackName}/cloudflare-client-secret'
-      Description: Cloudflare Access service token client secret
-      Type: String
-      Value: !Ref CloudflareClientSecret
-      Tags:
-        Application: home-assistant-alexa
-
-  OAuthJwtSecretParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/ha-alexa/${AWS::StackName}/oauth-jwt-secret'
-      Description: Secret for signing/verifying JWT authorization codes
-      Type: String
-      Value: !Ref OAuthJwtSecret
-      Tags:
-        Application: home-assistant-alexa
-
   # IAM policy for Parameter Store access (read-only, least privilege)
+  # Note: Parameters are created externally as SecureString via deploy.py script
   ParameterStoreAccessPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -118,14 +88,16 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          # Allow reading parameters (read-only)
+          # Allow reading parameters under the stack's namespace
           - Sid: ReadParameterStore
             Effect: Allow
             Action:
               - ssm:GetParameter
               - ssm:GetParameters
             Resource:
-              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ha-alexa/${AWS::StackName}/*'
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CloudflareClientId}'
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CloudflareClientSecret}'
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${OAuthJwtSecret}'
           
           # Explicitly deny modifying or deleting parameters
           - Sid: DenyParameterModification
@@ -136,7 +108,7 @@ Resources:
               - ssm:DeleteParameters
             Resource: '*'
           
-          # Allow KMS decryption only via SSM service
+          # Allow KMS decryption for SecureString parameters (via SSM service only)
           - Sid: AllowKMSDecryptViaSSM
             Effect: Allow
             Action:
@@ -156,8 +128,8 @@ Resources:
       Environment:
         Variables:
           BASE_URL: !Ref HomeAssistantUrl
-          CF_CLIENT_ID: !Ref CloudflareClientIdParameter
-          CF_CLIENT_SECRET: !Ref CloudflareClientSecretParameter
+          CF_CLIENT_ID: !Ref CloudflareClientId
+          CF_CLIENT_SECRET: !Ref CloudflareClientSecret
           NOT_VERIFY_SSL: !If [DisableSSLVerification, '1', !Ref 'AWS::NoValue']
           DEBUG: !If [EnableDebugMode, '1', !Ref 'AWS::NoValue']
       Policies:
@@ -184,9 +156,9 @@ Resources:
       Environment:
         Variables:
           BASE_URL: !Ref HomeAssistantUrl
-          CF_CLIENT_ID: !Ref CloudflareClientIdParameter
-          CF_CLIENT_SECRET: !Ref CloudflareClientSecretParameter
-          OAUTH_JWT_SECRET: !Ref OAuthJwtSecretParameter
+          CF_CLIENT_ID: !Ref CloudflareClientId
+          CF_CLIENT_SECRET: !Ref CloudflareClientSecret
+          OAUTH_JWT_SECRET: !Ref OAuthJwtSecret
           NOT_VERIFY_SSL: !If [DisableSSLVerification, '1', !Ref 'AWS::NoValue']
           DEBUG: !If [EnableDebugMode, '1', !Ref 'AWS::NoValue']
       Policies:
@@ -225,7 +197,7 @@ Resources:
         Variables:
           BASE_URL: !Ref HomeAssistantUrl
           ALEXA_VENDOR_ID: !Ref AlexaVendorId
-          OAUTH_JWT_SECRET: !Ref OAuthJwtSecretParameter
+          OAUTH_JWT_SECRET: !Ref OAuthJwtSecret
           DEBUG: !If [EnableDebugMode, '1', !Ref 'AWS::NoValue']
       Policies:
         - !Ref ParameterStoreAccessPolicy
