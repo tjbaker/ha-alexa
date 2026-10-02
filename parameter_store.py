@@ -20,13 +20,17 @@ API calls and improving Lambda cold start performance.
 """
 
 import logging
-from typing import Any
+import time
+from typing import Any, Final
 
 
 logger = logging.getLogger(__name__)
 
+# Cached values expire so rotated secrets are picked up without a redeploy
+CACHE_TTL_SECONDS: Final[float] = 300.0
+
 # Module-level cache (persists across warm Lambda invocations)
-_parameter_cache: dict[str, str] = {}
+_parameter_cache: dict[str, tuple[str, float]] = {}
 
 
 def get_parameter(param_name: str) -> str:
@@ -42,9 +46,12 @@ def get_parameter(param_name: str) -> str:
         RuntimeError: If Parameter Store fetch fails
     """
     # Check cache first (persists across warm Lambda invocations)
-    if param_name in _parameter_cache:
-        logger.debug(f"Using cached parameter: {param_name}")
-        return _parameter_cache[param_name]
+    cached = _parameter_cache.get(param_name)
+    if cached is not None:
+        cached_value, fetched_at = cached
+        if time.monotonic() - fetched_at < CACHE_TTL_SECONDS:
+            logger.debug(f"Using cached parameter: {param_name}")
+            return cached_value
 
     # Fetch from Parameter Store
     try:
@@ -56,7 +63,7 @@ def get_parameter(param_name: str) -> str:
         response: dict[str, Any] = ssm.get_parameter(Name=param_name, WithDecryption=True)
 
         value: str = response["Parameter"]["Value"]
-        _parameter_cache[param_name] = value
+        _parameter_cache[param_name] = (value, time.monotonic())
 
         logger.info(f"Successfully fetched and cached parameter: {param_name}")
         return value

@@ -3,5 +3,5 @@ urllib3>=2.0.0,<3.0.0
 
 # Development dependencies (install with: pip install -e ".[dev]")
 # Or install individually for local development:
-# pip install mypy ruff black pytest pytest-cov pytest-mock types-urllib3
+# pip install mypy ruff pytest pytest-cov pytest-mock boto3 types-urllib3 types-boto3
 

@@ -4,7 +4,7 @@ help:
 	@echo "Available commands:"
 	@echo "  make install       - Install production dependencies"
 	@echo "  make install-dev   - Install development dependencies"
-	@echo "  make format        - Format code with black and ruff"
+	@echo "  make format        - Format code with ruff"
 	@echo "  make lint          - Run linting checks"
 	@echo "  make type-check    - Run mypy type checker"
 	@echo "  make test          - Run tests"
@@ -18,8 +18,6 @@ install-dev:
 	pip install -e ".[dev]"
 
 format:
-	@echo "Running black..."
-	black .
 	@echo "Running ruff format..."
 	ruff format .
 	@echo "Running ruff fix..."
@@ -28,8 +26,8 @@ format:
 lint:
 	@echo "Running ruff..."
 	ruff check --unsafe-fixes .
-	@echo "Running black check..."
-	black --check --diff --color .
+	@echo "Running ruff format check..."
+	ruff format --check .
 
 type-check:
 	@echo "Running mypy..."

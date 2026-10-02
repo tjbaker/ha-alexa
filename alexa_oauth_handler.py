@@ -17,6 +17,11 @@
 
 This Lambda function handles OAuth token requests from Alexa during the
 account linking process, forwarding them to Home Assistant's auth endpoint.
+
+It is served through a Lambda Function URL, so responses use the Function URL
+proxy format ({"statusCode": ..., "body": ...}) with RFC 6749 OAuth error
+bodies ({"error": "invalid_grant", ...}) that Alexa's account linking service
+understands.
 """
 
 from __future__ import annotations
@@ -28,7 +33,6 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from enum import Enum
 from hashlib import sha256
 from typing import Any, Final
 from urllib.parse import parse_qs, urlencode
@@ -47,16 +51,15 @@ MAX_LOG_LENGTH: Final[int] = 100
 logger = logging.getLogger("HomeAssistant-OAuth")
 logger.setLevel(logging.DEBUG if os.getenv("DEBUG") else logging.INFO)
 
-# Suppress SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+class TokenExchangeError(Exception):
+    """OAuth error relayed from Home Assistant's token endpoint."""
 
-class ErrorType(str, Enum):
-    """OAuth error types."""
-
-    INVALID_AUTHORIZATION = "INVALID_AUTHORIZATION_CREDENTIAL"
-    INVALID_REQUEST = "INVALID_DIRECTIVE"
-    INTERNAL_ERROR = "INTERNAL_ERROR"
+    def __init__(self, error: dict[str, Any], status: int = 400) -> None:
+        """Initialize with an RFC 6749 error object (e.g. {"error": "invalid_grant"})."""
+        super().__init__(str(error.get("error_description") or error.get("error") or "error"))
+        self.error = error
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,7 @@ class Config:
     cf_client_id: str | None
     cf_client_secret: str | None
     oauth_jwt_secret: str | None
+    verify_ssl: bool = True
 
     @classmethod
     def from_environment(cls) -> Config:
@@ -79,11 +83,11 @@ class Config:
             Validated configuration instance.
 
         Raises:
-            ValueError: If required configuration is missing.
+            RuntimeError: If required configuration is missing.
         """
         base_url = os.getenv("BASE_URL")
         if not base_url:
-            raise ValueError("BASE_URL environment variable is required")
+            raise RuntimeError("BASE_URL environment variable is required")
 
         # Sensitive values: env vars contain Parameter Store names
         cf_client_id_param = os.getenv("CF_CLIENT_ID")
@@ -99,6 +103,7 @@ class Config:
             oauth_jwt_secret=(
                 get_parameter(oauth_jwt_secret_param) if oauth_jwt_secret_param else None
             ),
+            verify_ssl=not os.getenv("NOT_VERIFY_SSL"),
         )
 
 
@@ -140,25 +145,6 @@ class TokenRequest:
         return cls(body=decoded)
 
 
-@dataclass(frozen=True)
-class ErrorResponse:
-    """OAuth error response."""
-
-    error_type: ErrorType
-    message: str
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to Alexa response format."""
-        return {
-            "event": {
-                "payload": {
-                    "type": self.error_type.value,
-                    "message": self.message,
-                }
-            }
-        }
-
-
 class HomeAssistantAuthClient:
     """Client for Home Assistant OAuth endpoints."""
 
@@ -170,9 +156,13 @@ class HomeAssistantAuthClient:
         """
         self.config = config
         self.http = urllib3.PoolManager(
-            cert_reqs="CERT_REQUIRED",
+            cert_reqs="CERT_REQUIRED" if config.verify_ssl else "CERT_NONE",
             timeout=urllib3.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT),
         )
+
+        if not config.verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            logger.warning("SSL verification is disabled - not recommended for production")
 
     def exchange_token(self, request_body: bytes) -> dict[str, Any]:
         """Forward OAuth token request to Home Assistant.
@@ -185,8 +175,9 @@ class HomeAssistantAuthClient:
 
         Raises:
             ValueError: If response cannot be parsed.
-            PermissionError: If authentication fails.
-            RuntimeError: If request fails.
+            TokenExchangeError: If Home Assistant returns an OAuth error body.
+            RuntimeError: If the request fails or the error did not come from
+                Home Assistant's OAuth endpoint (e.g. a Cloudflare Access denial).
         """
         url = f"{self.config.base_url}/auth/token"
         headers = self._build_headers()
@@ -214,9 +205,13 @@ class HomeAssistantAuthClient:
             error_msg = self._decode_response(response.data)
             logger.error(f"Token exchange failed: {response.status} - {error_msg}")
 
-            if response.status in (401, 403):
-                raise PermissionError(f"Authentication failed: {error_msg}")
-            raise RuntimeError(f"Token exchange error {response.status}: {error_msg}")
+            # Relay only genuine OAuth error bodies from Home Assistant. Anything else
+            # (e.g. a Cloudflare Access 403 for an expired service token) is a server
+            # problem: answering invalid_grant would make Alexa unlink the account.
+            oauth_error = self._parse_oauth_error(response.data)
+            if response.status in (400, 401, 403) and oauth_error is not None:
+                raise TokenExchangeError(oauth_error, response.status)
+            raise RuntimeError(f"Token exchange error {response.status}")
 
         # Parse successful response
         try:
@@ -256,6 +251,47 @@ class HomeAssistantAuthClient:
         """Safely decode response data."""
         return data.decode("utf-8", errors="replace")
 
+    @staticmethod
+    def _parse_oauth_error(data: bytes) -> dict[str, Any] | None:
+        """Parse an RFC 6749 OAuth error body, or return None if it is not one."""
+        try:
+            parsed = json.loads(data.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+            return parsed
+        return None
+
+
+# Cached across warm Lambda invocations so HTTPS connections are reused
+_cached_client: HomeAssistantAuthClient | None = None
+
+
+def _get_client(config: Config) -> HomeAssistantAuthClient:
+    """Return a client for the given config, reusing the cached one if possible."""
+    global _cached_client  # noqa: PLW0603
+    if _cached_client is None or _cached_client.config != config:
+        _cached_client = HomeAssistantAuthClient(config)
+    return _cached_client
+
+
+def _http_response(status: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Build a Lambda Function URL response with a JSON body."""
+    return {
+        "statusCode": status,
+        "headers": {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+        "body": json.dumps(body),
+    }
+
+
+def _oauth_error(status: int, error: str, description: str) -> dict[str, Any]:
+    """Build an RFC 6749 OAuth error response."""
+    return _http_response(status, {"error": error, "error_description": description})
+
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """AWS Lambda handler for OAuth token requests.
@@ -266,16 +302,19 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     3. Returns the OAuth token response to Alexa
 
     Args:
-        event: Lambda event from API Gateway.
+        event: Lambda event from the Function URL.
         context: Lambda context (unused).
 
     Returns:
-        OAuth token response or error response.
+        Function URL response with the OAuth token JSON, or an RFC 6749
+        error response with an appropriate HTTP status code.
 
     Environment Variables:
         BASE_URL: Home Assistant URL (required)
-        CF_CLIENT_ID: Cloudflare Access service token client ID (required)
-        CF_CLIENT_SECRET: Cloudflare Access service token client secret (required)
+        CF_CLIENT_ID: Parameter Store path for Cloudflare Access client ID (optional)
+        CF_CLIENT_SECRET: Parameter Store path for Cloudflare Access client secret (optional)
+        OAUTH_JWT_SECRET: Parameter Store path for the JWT signing secret (optional)
+        NOT_VERIFY_SSL: Disable SSL verification (optional)
         DEBUG: Enable debug logging (optional)
     """
     try:
@@ -290,27 +329,24 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         body = _maybe_unwrap_jwt_code(request.body, config)
 
         # Exchange token with Home Assistant
-        client = HomeAssistantAuthClient(config)
-        return client.exchange_token(body)
+        client = _get_client(config)
+        return _http_response(200, client.exchange_token(body))
+
+    except TokenExchangeError as e:
+        logger.exception("Token exchange rejected by Home Assistant")
+        return _http_response(e.status, e.error)
 
     except ValueError as e:
         logger.exception("Invalid request")
-        return ErrorResponse(ErrorType.INVALID_REQUEST, str(e)).to_dict()
-
-    except PermissionError as e:
-        logger.exception("Authentication error")
-        return ErrorResponse(ErrorType.INVALID_AUTHORIZATION, str(e)).to_dict()
+        return _oauth_error(400, "invalid_request", str(e))
 
     except RuntimeError as e:
         logger.exception("Runtime error")
-        return ErrorResponse(ErrorType.INTERNAL_ERROR, str(e)).to_dict()
+        return _oauth_error(502, "server_error", str(e))
 
     except Exception:
         logger.exception("Unexpected error processing token request")
-        return ErrorResponse(
-            ErrorType.INTERNAL_ERROR,
-            "An unexpected error occurred",
-        ).to_dict()
+        return _oauth_error(500, "server_error", "An unexpected error occurred")
 
 
 def _sanitize_body(body: bytes) -> str:
@@ -367,7 +403,7 @@ def _log_request_context(event: dict[str, Any]) -> None:
     if not os.getenv("DEBUG"):
         return
     rc = event.get("requestContext") or {}
-    method = (event.get("requestContext", {}).get("http", {}) or {}).get("method") or ""
+    method = (rc.get("http") or {}).get("method") or ""
     logger.debug(
         "Token request context: domain=%s, method=%s, keys=%s",
         rc.get("domainName"),
@@ -396,10 +432,10 @@ def _verify_and_extract_ha_code(jwt_code: str, secret: str) -> str | None:
         payload_raw = _b64url_decode(payload_b64)
         payload: dict[str, Any] = json.loads(payload_raw.decode("utf-8"))
 
-        # exp check
-        exp = int(payload.get("exp", 0))
+        # exp is required; tokens without it are rejected
+        exp = payload.get("exp")
         now = int(time.time())
-        if exp and now > exp:
+        if not isinstance(exp, int) or now > exp:
             return None
 
         ha_code = payload.get("ha_code")

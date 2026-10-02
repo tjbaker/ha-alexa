@@ -40,22 +40,28 @@ sam local invoke AlexaOAuthFunction -e events/oauth-refresh-token.json
 
 1. **Replace tokens**: Update the `token` fields with actual tokens from your Home Assistant instance
 2. **Replace entity IDs**: Change `endpointId` values to match your Home Assistant entities
-3. **Environment variables**: Set required environment variables before testing:
-   ```bash
-   export BASE_URL=https://your-ha-instance.com
-   export CF_CLIENT_ID=your-cloudflare-client-id
-   export CF_CLIENT_SECRET=your-cloudflare-client-secret
+3. **Environment variables**: `sam local invoke` takes environment variables from
+   `template.yaml`, not your shell. Override them with an `--env-vars` file:
+   ```json
+   {
+     "AlexaSmartHomeFunction": { "BASE_URL": "https://your-ha-instance.com", "DEBUG": "1" },
+     "AlexaOAuthFunction": { "BASE_URL": "https://your-ha-instance.com", "DEBUG": "1" }
+   }
    ```
-
-4. **Start local API**: SAM CLI will automatically start a local Lambda runtime
+   ```bash
+   sam local invoke AlexaSmartHomeFunction -e events/alexa-discovery.json --env-vars env.json
+   ```
+4. **AWS credentials**: `CF_CLIENT_ID`, `CF_CLIENT_SECRET`, and `OAUTH_JWT_SECRET` are
+   Parameter Store paths, so the function reads the real secrets from SSM using your
+   local AWS credentials (deploy with `deploy.py` first)
 
 ## Creating Custom Events
 
 To capture real Alexa events:
-1. Enable CloudWatch Logs for your Lambda functions
+1. Enable Debug Mode (see the main README) so the smart home handler logs each event
 2. Trigger actions through the Alexa app
-3. Copy the event JSON from CloudWatch
-4. Remove sensitive data (real tokens, personal info)
+3. Copy the `Processing event` JSON from CloudWatch (tokens are already redacted)
+4. Remove any remaining personal info
 5. Save as a new test event
 
 ## More Event Examples
