@@ -24,8 +24,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Final
 
 import urllib3
@@ -43,11 +44,16 @@ READ_TIMEOUT: Final[float] = 10.0
 logger = logging.getLogger("HomeAssistant-SmartHome")
 logger.setLevel(logging.DEBUG if os.getenv("DEBUG") else logging.INFO)
 
-# Suppress SSL warnings when verification is disabled
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+class ConfigurationError(RuntimeError):
+    """Raised when required configuration is missing or invalid."""
 
 
-class ErrorType(str, Enum):
+class UpstreamError(RuntimeError):
+    """Raised when Home Assistant is unreachable or returns a server error."""
+
+
+class ErrorType(StrEnum):
     """Alexa Smart Home error types."""
 
     INVALID_AUTHORIZATION = "INVALID_AUTHORIZATION_CREDENTIAL"
@@ -77,11 +83,11 @@ class Config:
             Validated configuration instance.
 
         Raises:
-            RuntimeError: If required configuration is missing.
+            ConfigurationError: If required configuration is missing.
         """
         base_url = os.getenv("BASE_URL")
         if not base_url:
-            raise RuntimeError("BASE_URL environment variable is required")
+            raise ConfigurationError("BASE_URL environment variable is required")
 
         # Sensitive values: env vars contain Parameter Store names
         cf_client_id_param = os.getenv("CF_CLIENT_ID")
@@ -185,21 +191,39 @@ class AlexaRequest:
 
 @dataclass(frozen=True)
 class ErrorResponse:
-    """Alexa Smart Home error response."""
+    """Alexa Smart Home error response.
+
+    Builds a spec-compliant Alexa.ErrorResponse event, echoing the
+    correlationToken and endpointId from the failed directive when available.
+    """
 
     error_type: ErrorType
     message: str
+    correlation_token: str | None = None
+    endpoint_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to Alexa response format."""
-        return {
-            "event": {
-                "payload": {
-                    "type": self.error_type.value,
-                    "message": self.message,
-                }
-            }
+        header: dict[str, Any] = {
+            "namespace": "Alexa",
+            "name": "ErrorResponse",
+            "messageId": str(uuid.uuid4()),
+            "payloadVersion": SUPPORTED_PAYLOAD_VERSION,
         }
+        if self.correlation_token:
+            header["correlationToken"] = self.correlation_token
+
+        event: dict[str, Any] = {
+            "header": header,
+            "payload": {
+                "type": self.error_type.value,
+                "message": self.message,
+            },
+        }
+        if self.endpoint_id:
+            event["endpoint"] = {"endpointId": self.endpoint_id}
+
+        return {"event": event}
 
 
 class HomeAssistantClient:
@@ -218,6 +242,7 @@ class HomeAssistantClient:
         )
 
         if not config.verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             logger.warning("SSL verification is disabled - not recommended for production")
 
     def forward_smart_home_request(self, event: dict[str, Any], token: str) -> dict[str, Any]:
@@ -232,7 +257,8 @@ class HomeAssistantClient:
 
         Raises:
             ValueError: If response cannot be parsed.
-            RuntimeError: If Home Assistant returns an error.
+            PermissionError: If Home Assistant rejects the bearer token (HTTP 401).
+            UpstreamError: If Home Assistant is unreachable or returns an error.
         """
         url = f"{self.config.base_url}/api/alexa/smart_home"
         headers = self._build_headers(token)
@@ -248,16 +274,19 @@ class HomeAssistantClient:
             )
         except Exception as e:
             logger.exception("Failed to connect to Home Assistant")
-            raise RuntimeError(f"Connection failed: {e}") from e
+            raise UpstreamError(f"Connection failed: {e}") from e
 
         # Handle HTTP errors
         if response.status >= 400:
             error_msg = self._decode_response(response.data)
             logger.error(f"Home Assistant error: {response.status} - {error_msg}")
 
-            if response.status in (401, 403):
+            # Only 401 means HA rejected the bearer token; a 403 typically comes from
+            # Cloudflare Access (e.g. an expired service token) and must not be
+            # reported to Alexa as a bad user credential
+            if response.status == 401:
                 raise PermissionError(f"Authentication failed: {error_msg}")
-            raise RuntimeError(f"Home Assistant error {response.status}: {error_msg}")
+            raise UpstreamError(f"Home Assistant error {response.status}: {error_msg}")
 
         # Parse successful response
         try:
@@ -296,6 +325,34 @@ class HomeAssistantClient:
         return data.decode("utf-8", errors="replace")
 
 
+# Cached across warm Lambda invocations so HTTPS connections are reused
+_cached_client: HomeAssistantClient | None = None
+
+
+def _get_client(config: Config) -> HomeAssistantClient:
+    """Return a client for the given config, reusing the cached one if possible."""
+    global _cached_client  # noqa: PLW0603
+    if _cached_client is None or _cached_client.config != config:
+        _cached_client = HomeAssistantClient(config)
+    return _cached_client
+
+
+def _error_context(event: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extract correlationToken and endpointId from an event for error responses."""
+    try:
+        directive = event.get("directive") or {}
+        header = directive.get("header") or {}
+        endpoint = directive.get("endpoint") or {}
+        correlation_token = header.get("correlationToken")
+        endpoint_id = endpoint.get("endpointId")
+    except AttributeError:
+        return None, None
+    return (
+        correlation_token if isinstance(correlation_token, str) else None,
+        endpoint_id if isinstance(endpoint_id, str) else None,
+    )
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """AWS Lambda handler for Alexa Smart Home directives.
 
@@ -314,12 +371,17 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     Environment Variables:
         BASE_URL: Home Assistant URL (required)
-        CF_CLIENT_ID: Cloudflare Access service token client ID (required)
-        CF_CLIENT_SECRET: Cloudflare Access service token client secret (required)
+        CF_CLIENT_ID: Parameter Store path for Cloudflare Access client ID (optional)
+        CF_CLIENT_SECRET: Parameter Store path for Cloudflare Access client secret (optional)
         NOT_VERIFY_SSL: Disable SSL verification (optional)
         DEBUG: Enable debug logging (optional)
         LONG_LIVED_ACCESS_TOKEN: Debug fallback token (optional)
     """
+    correlation_token, endpoint_id = _error_context(event)
+
+    def _error(error_type: ErrorType, message: str) -> dict[str, Any]:
+        return ErrorResponse(error_type, message, correlation_token, endpoint_id).to_dict()
+
     try:
         # Load configuration
         config = Config.from_environment()
@@ -333,7 +395,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             logger.debug(f"Processing event: {sanitized}")
 
         # Forward to Home Assistant
-        client = HomeAssistantClient(config)
+        client = _get_client(config)
         response = client.forward_smart_home_request(event, request.token)
 
         if os.getenv("DEBUG"):
@@ -343,26 +405,24 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     except ValueError as e:
         logger.exception("Validation error")
-        return ErrorResponse(ErrorType.INVALID_DIRECTIVE, str(e)).to_dict()
+        return _error(ErrorType.INVALID_DIRECTIVE, str(e))
 
     except PermissionError as e:
         logger.exception("Authentication error")
-        return ErrorResponse(ErrorType.INVALID_AUTHORIZATION, str(e)).to_dict()
+        return _error(ErrorType.INVALID_AUTHORIZATION, str(e))
+
+    except UpstreamError as e:
+        logger.exception("Home Assistant unreachable")
+        return _error(ErrorType.BRIDGE_UNREACHABLE, str(e))
 
     except RuntimeError as e:
-        logger.exception("Runtime error")
-        # Configuration errors (e.g., missing BASE_URL) return INTERNAL_ERROR
-        # Network/connection errors to Home Assistant return BRIDGE_UNREACHABLE
-        if "BASE_URL" in str(e) or "configuration" in str(e).lower():
-            return ErrorResponse(ErrorType.INTERNAL_ERROR, str(e)).to_dict()
-        return ErrorResponse(ErrorType.BRIDGE_UNREACHABLE, str(e)).to_dict()
+        # ConfigurationError and Parameter Store failures - our side, not HA's
+        logger.exception("Configuration or runtime error")
+        return _error(ErrorType.INTERNAL_ERROR, str(e))
 
     except Exception:
         logger.exception("Unexpected error processing directive")
-        return ErrorResponse(
-            ErrorType.INTERNAL_ERROR,
-            "An unexpected error occurred",
-        ).to_dict()
+        return _error(ErrorType.INTERNAL_ERROR, "An unexpected error occurred")
 
 
 def _sanitize_event(event: dict[str, Any]) -> dict[str, Any]:

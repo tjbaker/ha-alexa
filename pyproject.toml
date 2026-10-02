@@ -36,7 +36,6 @@ dev = [
     
     # Linting and formatting
     "ruff>=0.1.0",
-    "black>=23.12.0",
     
     # Testing
     "pytest>=7.4.0",
@@ -189,14 +188,19 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["D104"]  # Missing docstring in public package
-"tests/*" = ["S101", "ANN401"]  # Allow assert and Any in tests
+"tests/*" = ["S101", "ANN401", "SLF001"]  # Allow assert, Any, and private access in tests
 "deploy.py" = ["T201", "S603", "S607", "PLR0915", "PLR0912", "SIM108"]  # Allow print, subprocess, complexity in deployment script
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.isort]
-known-first-party = ["alexa_smart_home_handler", "alexa_oauth_handler"]
+known-first-party = [
+    "alexa_smart_home_handler",
+    "alexa_oauth_handler",
+    "alexa_authorize_handler",
+    "parameter_store",
+]
 force-single-line = false
 lines-after-imports = 2
 
@@ -205,26 +209,6 @@ quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
-
-# =============================================================================
-# Black Configuration
-# =============================================================================
-[tool.black]
-line-length = 100
-target-version = ["py313"]
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # Default excludes
-  \.git
-  | \.mypy_cache
-  | \.ruff_cache
-  | \.venv
-  | venv
-  | build
-  | dist
-)/
-'''
 
 # =============================================================================
 # Pytest Configuration
