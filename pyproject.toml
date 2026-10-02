@@ -36,6 +36,7 @@ dev = [
     
     # Linting and formatting
     "ruff>=0.1.0",
+    "cfn-lint==1.57.1",  # pinned: new releases add rules; Dependabot bumps it
     
     # Testing
     "pytest>=7.4.0",

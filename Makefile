@@ -1,11 +1,12 @@
-.PHONY: help install install-dev format lint type-check test test-cov clean
+.PHONY: help install install-dev format lint lint-template type-check test test-cov clean
 
 help:
 	@echo "Available commands:"
 	@echo "  make install       - Install production dependencies"
 	@echo "  make install-dev   - Install development dependencies"
 	@echo "  make format        - Format code with ruff"
-	@echo "  make lint          - Run linting checks"
+	@echo "  make lint          - Run linting checks (code and SAM template)"
+	@echo "  make lint-template - Validate template.yaml with cfn-lint"
 	@echo "  make type-check    - Run mypy type checker"
 	@echo "  make test          - Run tests"
 	@echo "  make test-cov      - Run tests with coverage report"
@@ -23,11 +24,15 @@ format:
 	@echo "Running ruff fix..."
 	ruff check --fix .
 
-lint:
+lint: lint-template
 	@echo "Running ruff..."
 	ruff check --unsafe-fixes .
 	@echo "Running ruff format check..."
 	ruff format --check .
+
+lint-template:
+	@echo "Running cfn-lint..."
+	cfn-lint template.yaml
 
 type-check:
 	@echo "Running mypy..."

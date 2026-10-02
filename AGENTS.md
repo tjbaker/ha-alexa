@@ -24,7 +24,7 @@ Use a Python 3.13 virtualenv (the system `python3` may be newer than the Lambda 
 ```bash
 make install-dev   # pip install -e ".[dev]"
 make format        # ruff format + ruff check --fix
-make lint          # ruff check + ruff format --check
+make lint          # ruff check + ruff format --check + cfn-lint on template.yaml
 make type-check    # mypy --strict on the four Lambda modules (not deploy.py or tests)
 make test          # pytest
 make test-cov      # pytest with coverage; CI fails below 90%

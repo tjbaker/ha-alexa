@@ -427,7 +427,7 @@ sequenceDiagram
 make help           # Show all commands
 make install-dev    # Install dev dependencies
 make format         # Format code (ruff)
-make lint           # Run linters
+make lint           # Run linters (ruff + cfn-lint for template.yaml)
 make type-check     # Run mypy
 make test           # Run tests
 make test-cov       # Run tests with coverage
@@ -438,6 +438,7 @@ make clean          # Remove build artifacts
 
 - **Type Checking**: mypy with strict mode, 100% type coverage
 - **Linting and formatting**: Ruff (50+ rule sets)
+- **Template validation**: cfn-lint checks `template.yaml` against the CloudFormation/SAM schema
 - **Testing**: pytest with pytest-cov, pytest-mock
 - **Coverage**: Comprehensive test suite with >90% coverage
 
