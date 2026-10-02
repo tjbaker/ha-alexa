@@ -49,8 +49,8 @@ Before finishing a change, run `make lint type-check test-cov`; all must pass.
 - Secrets live only in SSM SecureString at `/<stack-name>/<name>`. CloudFormation
   parameters carry the paths, never the values
 - Error responses go to unauthenticated callers (the OAuth endpoints are public
-  Function URLs): don't add upstream bodies, hostnames, or parameter paths to them.
-  The token handler's `str(e)` passthrough for `RuntimeError` is a known gap
+  Function URLs): return generic messages and log the details. Never include upstream
+  bodies, hostnames, or Parameter Store paths
 
 ## Gotchas
 

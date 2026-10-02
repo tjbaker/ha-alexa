@@ -52,6 +52,18 @@ logger.setLevel(logging.DEBUG if os.getenv("DEBUG") else logging.INFO)
 
 # Constants
 JWT_TTL_SECONDS: Final[int] = 300  # 5 minutes
+# RFC 6749 section 4.1.2.1 authorization error codes we pass back to Alexa
+OAUTH_AUTHORIZE_ERRORS: Final[frozenset[str]] = frozenset(
+    {
+        "access_denied",
+        "invalid_request",
+        "invalid_scope",
+        "server_error",
+        "temporarily_unavailable",
+        "unauthorized_client",
+        "unsupported_response_type",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -134,6 +146,20 @@ def _json_from_b64(data: str) -> dict[str, Any]:
     return result
 
 
+def _recover_alexa_state(ha_state: str, vendor_id: str) -> tuple[str, str]:
+    """Recover Alexa's state and redirect_uri from the state envelope sent to HA.
+
+    Raises:
+        ValueError: If the recovered redirect_uri is not an allowed Alexa URL.
+    """
+    envelope = _json_from_b64(ha_state)
+    a_state = str(envelope.get("a_state", ""))
+    redirect_uri = str(envelope.get("redirect_uri", ""))
+    if not _is_allowed_redirect(redirect_uri, vendor_id):
+        raise ValueError("Recovered redirect_uri is not allowed")
+    return a_state, redirect_uri
+
+
 def _redirect(location: str) -> dict[str, Any]:
     return {
         "statusCode": 302,
@@ -171,6 +197,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 _sanitize_query(qs),
                 list(rc.keys()),
             )
+
+        # HA callback with an OAuth error (e.g. the user denied access): return
+        # the user to Alexa with the error rather than a dead-end 400 page
+        if "code" not in qs and "error" in qs and "state" in qs:
+            a_state, redirect_uri = _recover_alexa_state(qs["state"], config.vendor_id)
+            error = qs["error"] if qs["error"] in OAUTH_AUTHORIZE_ERRORS else "access_denied"
+            logger.info("Home Assistant returned authorization error: %s", error)
+            return _redirect(f"{redirect_uri}?{urlencode({'error': error, 'state': a_state})}")
 
         # Alexa initial request
         if "code" not in qs:
@@ -225,11 +259,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             raise ValueError("Missing code or state on callback")
 
         # Recover Alexa state and redirect_uri
-        envelope = _json_from_b64(ha_state)
-        a_state = str(envelope.get("a_state", ""))
-        redirect_uri = str(envelope.get("redirect_uri", ""))
-        if not _is_allowed_redirect(redirect_uri, config.vendor_id):
-            raise ValueError("Recovered redirect_uri is not allowed")
+        a_state, redirect_uri = _recover_alexa_state(ha_state, config.vendor_id)
 
         # Mint short-lived JWT that carries the HA authorization code
         now = int(time.time())

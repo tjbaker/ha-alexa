@@ -52,6 +52,10 @@ logger = logging.getLogger("HomeAssistant-OAuth")
 logger.setLevel(logging.DEBUG if os.getenv("DEBUG") else logging.INFO)
 
 
+class UpstreamError(RuntimeError):
+    """Raised when Home Assistant is unreachable or returns an unusable response."""
+
+
 class TokenExchangeError(Exception):
     """OAuth error relayed from Home Assistant's token endpoint."""
 
@@ -137,7 +141,7 @@ class TokenRequest:
             try:
                 decoded = base64.b64decode(body)
             except Exception as e:
-                raise ValueError(f"Failed to decode base64 body: {e}") from e
+                raise ValueError("Failed to decode base64 body") from e
         else:
             # Convert string to bytes
             decoded = body.encode("utf-8") if isinstance(body, str) else body
@@ -174,10 +178,10 @@ class HomeAssistantAuthClient:
             Token response from Home Assistant.
 
         Raises:
-            ValueError: If response cannot be parsed.
             TokenExchangeError: If Home Assistant returns an OAuth error body.
-            RuntimeError: If the request fails or the error did not come from
-                Home Assistant's OAuth endpoint (e.g. a Cloudflare Access denial).
+            UpstreamError: If the request fails, is redirected, returns invalid
+                JSON, or the error did not come from Home Assistant's OAuth
+                endpoint (e.g. a Cloudflare Access denial).
         """
         url = f"{self.config.base_url}/auth/token"
         headers = self._build_headers()
@@ -195,10 +199,17 @@ class HomeAssistantAuthClient:
                 url,
                 headers=headers,
                 body=request_body,
+                # A redirect here is never HA's token endpoint (e.g. a Cloudflare
+                # Access login page), so surface it instead of following it
+                redirect=False,
             )
         except Exception as e:
             logger.exception("Failed to connect to Home Assistant")
-            raise RuntimeError(f"Connection failed: {e}") from e
+            raise UpstreamError(f"Connection failed: {e}") from e
+
+        if 300 <= response.status < 400:
+            logger.error(f"Unexpected redirect from token endpoint: {response.status}")
+            raise UpstreamError(f"Unexpected redirect {response.status}")
 
         # Handle HTTP errors
         if response.status >= 400:
@@ -211,22 +222,23 @@ class HomeAssistantAuthClient:
             oauth_error = self._parse_oauth_error(response.data)
             if response.status in (400, 401, 403) and oauth_error is not None:
                 raise TokenExchangeError(oauth_error, response.status)
-            raise RuntimeError(f"Token exchange error {response.status}")
+            raise UpstreamError(f"Token exchange error {response.status}")
 
         # Parse successful response
         try:
-            result: dict[str, Any] = json.loads(response.data.decode("utf-8"))
-            logger.info("Token exchange successful")
-
-            # Log sanitized response in debug mode
-            if os.getenv("DEBUG"):
-                logger.debug(f"Response: {_sanitize_token_response(result)}")
-
-            return result
-
-        except json.JSONDecodeError as e:
+            result = json.loads(response.data.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.exception("Invalid JSON response")
-            raise ValueError("Home Assistant returned invalid JSON") from e
+            raise UpstreamError("Home Assistant returned invalid JSON") from e
+        if not isinstance(result, dict):
+            raise UpstreamError("Home Assistant returned an unexpected response")
+        logger.info("Token exchange successful")
+
+        # Log sanitized response in debug mode
+        if os.getenv("DEBUG"):
+            logger.debug(f"Response: {_sanitize_token_response(result)}")
+
+        return result
 
     def _build_headers(self) -> dict[str, str]:
         """Build HTTP headers for token request.
@@ -337,12 +349,20 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return _http_response(e.status, e.error)
 
     except ValueError as e:
+        # Messages describe the caller's own request, so they are safe to return
         logger.exception("Invalid request")
         return _oauth_error(400, "invalid_request", str(e))
 
-    except RuntimeError as e:
-        logger.exception("Runtime error")
-        return _oauth_error(502, "server_error", str(e))
+    # This endpoint is public: log details, but never return upstream bodies,
+    # hostnames, or Parameter Store paths to the caller
+    except UpstreamError:
+        logger.exception("Home Assistant unavailable")
+        return _oauth_error(502, "server_error", "Home Assistant is unavailable")
+
+    except RuntimeError:
+        # Configuration and Parameter Store failures - our side, not HA's
+        logger.exception("Configuration error")
+        return _oauth_error(500, "server_error", "Server configuration error")
 
     except Exception:
         logger.exception("Unexpected error processing token request")

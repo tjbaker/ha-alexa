@@ -389,3 +389,64 @@ class TestHTTPErrorHandling:
         response = lambda_handler(event, None)
         assert "event" in response
         assert response["event"]["payload"]["type"] == "BRIDGE_UNREACHABLE"
+
+
+class TestUnusableUpstreamResponses:
+    """Responses that aren't from HA's API must not be blamed on Alexa's directive."""
+
+    @pytest.fixture
+    def mock_config(self, monkeypatch: Any) -> None:
+        """Set up mock environment variables."""
+        monkeypatch.setenv("BASE_URL", "https://ha.example.com")
+
+    @pytest.fixture
+    def event(self) -> dict[str, Any]:
+        """A minimal valid discovery directive."""
+        return {
+            "directive": {
+                "header": {
+                    "namespace": "Alexa.Discovery",
+                    "name": "Discover",
+                    "payloadVersion": "3",
+                    "messageId": "abc-123",
+                },
+                "payload": {"scope": {"token": "bearer_token", "type": "BearerToken"}},
+            }
+        }
+
+    def _mock_response(self, mocker: Any, status: int, data: bytes) -> Any:
+        mock_response = mocker.Mock()
+        mock_response.status = status
+        mock_response.data = data
+        mock_http = mocker.Mock()
+        mock_http.request.return_value = mock_response
+        mocker.patch("alexa_smart_home_handler.urllib3.PoolManager", return_value=mock_http)
+        return mock_http
+
+    def test_invalid_json_returns_bridge_unreachable(
+        self, mock_config: Any, event: dict[str, Any], mocker: Any
+    ) -> None:
+        """Test that a non-JSON 200 (e.g. an HTML page) is BRIDGE_UNREACHABLE."""
+        self._mock_response(mocker, 200, b"<html>Sign in</html>")
+
+        response = lambda_handler(event, None)
+        assert response["event"]["payload"]["type"] == "BRIDGE_UNREACHABLE"
+
+    def test_non_object_json_returns_bridge_unreachable(
+        self, mock_config: Any, event: dict[str, Any], mocker: Any
+    ) -> None:
+        """Test that a JSON response that is not an object is BRIDGE_UNREACHABLE."""
+        self._mock_response(mocker, 200, b"[]")
+
+        response = lambda_handler(event, None)
+        assert response["event"]["payload"]["type"] == "BRIDGE_UNREACHABLE"
+
+    def test_redirect_is_not_followed(
+        self, mock_config: Any, event: dict[str, Any], mocker: Any
+    ) -> None:
+        """Test that a redirect (e.g. Cloudflare Access login) is BRIDGE_UNREACHABLE."""
+        mock_http = self._mock_response(mocker, 302, b"")
+
+        response = lambda_handler(event, None)
+        assert response["event"]["payload"]["type"] == "BRIDGE_UNREACHABLE"
+        assert mock_http.request.call_args.kwargs["redirect"] is False

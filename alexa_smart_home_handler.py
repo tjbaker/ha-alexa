@@ -256,9 +256,9 @@ class HomeAssistantClient:
             Response from Home Assistant.
 
         Raises:
-            ValueError: If response cannot be parsed.
             PermissionError: If Home Assistant rejects the bearer token (HTTP 401).
-            UpstreamError: If Home Assistant is unreachable or returns an error.
+            UpstreamError: If Home Assistant is unreachable, redirects, returns an
+                error, or returns invalid JSON.
         """
         url = f"{self.config.base_url}/api/alexa/smart_home"
         headers = self._build_headers(token)
@@ -271,10 +271,17 @@ class HomeAssistantClient:
                 url,
                 headers=headers,
                 body=json.dumps(event).encode("utf-8"),
+                # A redirect is never HA's API (e.g. a Cloudflare Access login page),
+                # so surface it instead of following it
+                redirect=False,
             )
         except Exception as e:
             logger.exception("Failed to connect to Home Assistant")
             raise UpstreamError(f"Connection failed: {e}") from e
+
+        if 300 <= response.status < 400:
+            logger.error(f"Unexpected redirect from Home Assistant: {response.status}")
+            raise UpstreamError(f"Unexpected redirect {response.status}")
 
         # Handle HTTP errors
         if response.status >= 400:
@@ -290,12 +297,14 @@ class HomeAssistantClient:
 
         # Parse successful response
         try:
-            result: dict[str, Any] = json.loads(response.data.decode("utf-8"))
-            logger.info("Request completed successfully")
-            return result
-        except json.JSONDecodeError as e:
+            result = json.loads(response.data.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.exception("Invalid JSON response")
-            raise ValueError("Home Assistant returned invalid JSON") from e
+            raise UpstreamError("Home Assistant returned invalid JSON") from e
+        if not isinstance(result, dict):
+            raise UpstreamError("Home Assistant returned an unexpected response")
+        logger.info("Request completed successfully")
+        return result
 
     def _build_headers(self, token: str) -> dict[str, str]:
         """Build HTTP headers for request.
