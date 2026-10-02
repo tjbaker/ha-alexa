@@ -19,6 +19,7 @@ on:
     branches: [ main ]
   schedule:
     - cron: '0 6 * * 1'  # weekly Monday 06:00 UTC
+  workflow_dispatch:  # manual runs: gh workflow run codeql.yml
 
 permissions:
   contents: read
