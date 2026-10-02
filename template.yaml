@@ -75,7 +75,9 @@ Globals:
     Runtime: python3.13
     Architectures:
       - arm64
-    Timeout: 10
+    # Must exceed the handlers' HTTP timeouts (2s connect + 10s read) so a slow
+    # Home Assistant still gets a graceful error response instead of a Lambda kill
+    Timeout: 15
     MemorySize: 128
 
 Resources:

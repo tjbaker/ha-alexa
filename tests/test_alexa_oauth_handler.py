@@ -21,13 +21,16 @@ import base64
 import json
 from typing import Any
 from unittest.mock import Mock
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 
+from alexa_authorize_handler import _json_b64
+from alexa_authorize_handler import lambda_handler as authorize_handler
 from alexa_oauth_handler import (
     Config,
-    ErrorType,
     HomeAssistantAuthClient,
+    TokenExchangeError,
     TokenRequest,
     lambda_handler,
 )
@@ -88,7 +91,7 @@ class TestConfig:
     def test_from_environment_missing_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test error when BASE_URL is missing."""
         monkeypatch.delenv("BASE_URL", raising=False)
-        with pytest.raises(ValueError, match="BASE_URL"):
+        with pytest.raises(RuntimeError, match="BASE_URL"):
             Config.from_environment()
 
     def test_cloudflare_optional(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,19 +166,72 @@ class TestHomeAssistantAuthClient:
         assert result["token_type"] == "Bearer"
         mock_request.assert_called_once()
 
-    def test_exchange_token_auth_error(self, mock_config: Config, mocker: Any) -> None:
-        """Test handling of authentication errors."""
+    def test_exchange_token_non_oauth_403_is_server_error(
+        self, mock_config: Config, mocker: Any
+    ) -> None:
+        """Test that a non-OAuth 403 (e.g. Cloudflare Access) is not relayed as invalid_grant."""
         client = HomeAssistantAuthClient(mock_config)
 
         mock_response = Mock()
-        mock_response.status = 401
-        mock_response.data = b"Unauthorized"
+        mock_response.status = 403
+        mock_response.data = b"<html>Forbidden</html>"
 
         mocker.patch.object(client.http, "request", return_value=mock_response)
 
-        body = b"grant_type=authorization_code&code=invalid"
-        with pytest.raises(PermissionError, match="Authentication failed"):
+        body = b"grant_type=refresh_token&refresh_token=abc"
+        with pytest.raises(RuntimeError, match="Token exchange error 403"):
             client.exchange_token(body)
+
+    def test_exchange_token_relays_oauth_403(self, mock_config: Config, mocker: Any) -> None:
+        """Test that a 403 OAuth error body from Home Assistant is relayed with its status."""
+        client = HomeAssistantAuthClient(mock_config)
+
+        mock_response = Mock()
+        mock_response.status = 403
+        mock_response.data = json.dumps(
+            {"error": "access_denied", "error_description": "User is not active"}
+        ).encode("utf-8")
+
+        mocker.patch.object(client.http, "request", return_value=mock_response)
+
+        with pytest.raises(TokenExchangeError) as exc_info:
+            client.exchange_token(b"grant_type=refresh_token&refresh_token=abc")
+
+        assert exc_info.value.error["error"] == "access_denied"
+        assert exc_info.value.status == 403
+
+    def test_exchange_token_relays_oauth_error(self, mock_config: Config, mocker: Any) -> None:
+        """Test that HTTP 400 OAuth errors from Home Assistant are relayed."""
+        client = HomeAssistantAuthClient(mock_config)
+
+        mock_response = Mock()
+        mock_response.status = 400
+        mock_response.data = json.dumps(
+            {"error": "invalid_grant", "error_description": "Invalid code"}
+        ).encode("utf-8")
+
+        mocker.patch.object(client.http, "request", return_value=mock_response)
+
+        body = b"grant_type=authorization_code&code=expired"
+        with pytest.raises(TokenExchangeError) as exc_info:
+            client.exchange_token(body)
+
+        assert exc_info.value.error["error"] == "invalid_grant"
+
+    def test_exchange_token_400_with_unparseable_body(
+        self, mock_config: Config, mocker: Any
+    ) -> None:
+        """Test that HTTP 400 with a non-OAuth body is a server error, not invalid_grant."""
+        client = HomeAssistantAuthClient(mock_config)
+
+        mock_response = Mock()
+        mock_response.status = 400
+        mock_response.data = b"Bad Request"
+
+        mocker.patch.object(client.http, "request", return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match="Token exchange error 400"):
+            client.exchange_token(b"grant_type=authorization_code&code=bad")
 
     def test_exchange_token_server_error(self, mock_config: Config, mocker: Any) -> None:
         """Test handling of server errors."""
@@ -261,8 +317,11 @@ class TestLambdaHandler:
 
         result = lambda_handler(valid_oauth_event, None)
 
-        assert result["access_token"] == "new-token"
-        assert result["token_type"] == "Bearer"
+        assert result["statusCode"] == 200
+        assert result["headers"]["Cache-Control"] == "no-store"
+        body = json.loads(result["body"])
+        assert body["access_token"] == "new-token"
+        assert body["token_type"] == "Bearer"
 
     def test_missing_base_url(
         self, valid_oauth_event: dict[str, Any], monkeypatch: pytest.MonkeyPatch
@@ -271,32 +330,75 @@ class TestLambdaHandler:
         monkeypatch.delenv("BASE_URL", raising=False)
         result = lambda_handler(valid_oauth_event, None)
 
-        assert result["event"]["payload"]["type"] == ErrorType.INVALID_REQUEST.value
+        assert result["statusCode"] == 502
+        assert json.loads(result["body"])["error"] == "server_error"
 
     def test_invalid_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test handling of invalid events."""
         monkeypatch.setenv("BASE_URL", "https://example.com")
         result = lambda_handler({}, None)
 
-        assert result["event"]["payload"]["type"] == ErrorType.INVALID_REQUEST.value
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"])["error"] == "invalid_request"
 
-    def test_authentication_error(
+    def test_oauth_error_relayed(
         self,
         valid_oauth_event: dict[str, Any],
         mocker: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test handling of authentication errors."""
+        """Test that OAuth errors from Home Assistant are relayed with HTTP 400."""
         monkeypatch.setenv("BASE_URL", "https://example.com")
 
         mocker.patch(
             "alexa_oauth_handler.HomeAssistantAuthClient.exchange_token",
-            side_effect=PermissionError("Auth failed"),
+            side_effect=TokenExchangeError({"error": "invalid_grant"}),
         )
 
         result = lambda_handler(valid_oauth_event, None)
 
-        assert result["event"]["payload"]["type"] == ErrorType.INVALID_AUTHORIZATION.value
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"])["error"] == "invalid_grant"
+
+    def test_token_exchange_error_keeps_status(
+        self,
+        valid_oauth_event: dict[str, Any],
+        mocker: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that relayed OAuth errors keep Home Assistant's HTTP status."""
+        monkeypatch.setenv("BASE_URL", "https://example.com")
+
+        mocker.patch(
+            "alexa_oauth_handler.HomeAssistantAuthClient.exchange_token",
+            side_effect=TokenExchangeError({"error": "access_denied"}, 403),
+        )
+
+        result = lambda_handler(valid_oauth_event, None)
+
+        assert result["statusCode"] == 403
+        assert json.loads(result["body"])["error"] == "access_denied"
+
+    def test_cloudflare_denial_is_not_invalid_grant(
+        self,
+        valid_oauth_event: dict[str, Any],
+        mocker: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that a Cloudflare Access 403 maps to server_error so Alexa keeps the link."""
+        monkeypatch.setenv("BASE_URL", "https://example.com")
+
+        mock_response = Mock()
+        mock_response.status = 403
+        mock_response.data = b"<html>Forbidden</html>"
+        mock_http = Mock()
+        mock_http.request.return_value = mock_response
+        mocker.patch("alexa_oauth_handler.urllib3.PoolManager", return_value=mock_http)
+
+        result = lambda_handler(valid_oauth_event, None)
+
+        assert result["statusCode"] == 502
+        assert json.loads(result["body"])["error"] == "server_error"
 
     def test_runtime_error(
         self,
@@ -314,4 +416,69 @@ class TestLambdaHandler:
 
         result = lambda_handler(valid_oauth_event, None)
 
-        assert result["event"]["payload"]["type"] == ErrorType.INTERNAL_ERROR.value
+        assert result["statusCode"] == 502
+        assert json.loads(result["body"])["error"] == "server_error"
+
+
+class TestAuthorizeToTokenRoundTrip:
+    """End-to-end test of the stateless JWT authorization code flow."""
+
+    def test_jwt_code_from_authorize_is_unwrapped_for_home_assistant(
+        self, mocker: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that a code minted by the authorize handler reaches HA as the raw HA code."""
+        monkeypatch.setenv("BASE_URL", "https://ha.example.com")
+        monkeypatch.setenv("ALEXA_VENDOR_ID", "VENDOR123")
+        # Both handlers resolve the same Parameter Store path to the same secret
+        monkeypatch.setenv("OAUTH_JWT_SECRET", "/ha-alexa/oauth-jwt-secret")
+
+        # Home Assistant redirects back to the authorize endpoint with its own code
+        redirect_uri = "https://pitangui.amazon.com/api/skill/link/VENDOR123"
+        callback = authorize_handler(
+            {
+                "queryStringParameters": {
+                    "code": "ha-code-123",
+                    "state": _json_b64({"a_state": "alexa-state", "redirect_uri": redirect_uri}),
+                },
+                "requestContext": {"domainName": "authorize.lambda-url.us-east-1.on.aws"},
+            },
+            None,
+        )
+        assert callback["statusCode"] == 302
+        location = urlparse(callback["headers"]["Location"])
+        assert f"{location.scheme}://{location.netloc}{location.path}" == redirect_uri
+        alexa_params = parse_qs(location.query)
+        assert alexa_params["state"] == ["alexa-state"]
+        jwt_code = alexa_params["code"][0]
+        assert jwt_code.count(".") == 2
+        assert "ha-code-123" not in jwt_code
+
+        # Alexa then exchanges the JWT code at the token endpoint
+        mock_response = Mock()
+        mock_response.status = 200
+        mock_response.data = json.dumps(
+            {"access_token": "access", "refresh_token": "refresh", "token_type": "Bearer"}
+        ).encode("utf-8")
+        mock_http = Mock()
+        mock_http.request.return_value = mock_response
+        mocker.patch("alexa_oauth_handler.urllib3.PoolManager", return_value=mock_http)
+
+        token_body = urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": jwt_code,
+                "client_id": "https://pitangui.amazon.com/",
+            }
+        )
+        result = lambda_handler({"body": token_body, "isBase64Encoded": False}, None)
+
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["access_token"] == "access"
+
+        # Home Assistant received its original code, with the other params intact
+        forwarded = parse_qs(mock_http.request.call_args.kwargs["body"].decode("utf-8"))
+        assert forwarded == {
+            "grant_type": ["authorization_code"],
+            "code": ["ha-code-123"],
+            "client_id": ["https://pitangui.amazon.com/"],
+        }

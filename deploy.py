@@ -23,9 +23,10 @@ This script:
 4. Never passes secrets to CloudFormation (only parameter paths)
 """
 
-import re
+import shlex
 import subprocess
 import sys
+import tomllib
 from getpass import getpass
 from pathlib import Path
 
@@ -66,32 +67,23 @@ def load_samconfig_defaults() -> dict[str, str]:
         return defaults
 
     try:
-        content = samconfig_path.read_text()
+        with samconfig_path.open("rb") as f:
+            samconfig = tomllib.load(f)
 
-        # Extract stack_name
-        if match := re.search(r'stack_name\s*=\s*"([^"]+)"', content):
-            defaults["stack_name"] = match.group(1)
+        params = samconfig.get("default", {}).get("deploy", {}).get("parameters", {})
 
-        # Extract region
-        if match := re.search(r'region\s*=\s*"([^"]+)"', content):
-            defaults["region"] = match.group(1)
+        if stack_name := params.get("stack_name"):
+            defaults["stack_name"] = str(stack_name)
+        if region := params.get("region"):
+            defaults["region"] = str(region)
 
-        # Extract parameter_overrides (handle escaped quotes in TOML string)
-        if match := re.search(r'parameter_overrides\s*=\s*"((?:[^"\\]|\\.)*)"', content):
-            overrides = match.group(1)
-
-            # Parse individual parameters (values are between \" and \")
-            param_patterns = {
-                "HomeAssistantUrl": r'HomeAssistantUrl=\\"([^\\]+)\\"',
-                "AlexaSkillId": r'AlexaSkillId=\\"([^\\]+)\\"',
-                "AlexaVendorId": r'AlexaVendorId=\\"([^\\]+)\\"',
-                "VerifySSL": r'VerifySSL=\\"([^\\]+)\\"',
-                "DebugMode": r'DebugMode=\\"([^\\]+)\\"',
-            }
-
-            for key, pattern in param_patterns.items():
-                if param_match := re.search(pattern, overrides):
-                    defaults[key] = param_match.group(1)
+        # parameter_overrides is either a single 'Key="value" ...' string or a list
+        overrides = params.get("parameter_overrides", "")
+        items = overrides if isinstance(overrides, list) else [overrides]
+        for token in (t for item in items for t in shlex.split(str(item))):
+            key, sep, value = token.partition("=")
+            if sep:
+                defaults[key] = value
 
     except Exception as e:
         print(f"⚠️  Warning: Could not parse samconfig.toml: {e}")
@@ -99,19 +91,39 @@ def load_samconfig_defaults() -> dict[str, str]:
     return defaults
 
 
-def prompt(message: str, default: str | None = None, secret: bool = False) -> str:
-    """Prompt user for input with optional default and secret handling."""
+def prompt(message: str, default: str | None = None) -> str:
+    """Prompt user for input with an optional default."""
     if default:
         prompt_text = f"{message} [{default}]: "
     else:
         prompt_text = f"{message}: "
 
-    if secret:
-        value = getpass(prompt_text)
-    else:
-        value = input(prompt_text)
+    return input(prompt_text).strip() or default or ""
 
-    return value.strip() or default or ""
+
+def parameter_exists(ssm: "boto3.client", name: str) -> bool:
+    """Check whether a parameter already exists in Parameter Store."""
+    try:
+        ssm.get_parameter(Name=name)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ParameterNotFound":
+            return False
+        raise
+    return True
+
+
+def prompt_secret(label: str, keep_existing: bool) -> str:
+    """Prompt for a secret value.
+
+    When keep_existing is True (the parameter already exists in Parameter Store),
+    an empty input means "keep the stored value" and returns "".
+    """
+    suffix = " (press Enter to keep existing)" if keep_existing else ""
+    while True:
+        value = getpass(f"{label}{suffix}: ").strip()
+        if value or keep_existing:
+            return value
+        print(f"❌ {label} is required")
 
 
 def create_secure_parameter(ssm: "boto3.client", name: str, value: str, description: str) -> None:
@@ -230,32 +242,6 @@ def main() -> None:
             break
         print("❌ Must be 'true' or 'false'")
 
-    print("\n🔒 Secrets (stored as SecureString with KMS encryption)")
-    print("-" * 50)
-
-    # Cloudflare Client ID validation
-    while True:
-        cf_client_id = prompt("Cloudflare Access Client ID", secret=True)
-        if cf_client_id:
-            break
-        print("❌ Cloudflare Client ID is required")
-
-    # Cloudflare Client Secret validation
-    while True:
-        cf_client_secret = prompt("Cloudflare Access Client Secret", secret=True)
-        if cf_client_secret:
-            break
-        print("❌ Cloudflare Client Secret is required")
-
-    # OAuth JWT Secret validation
-    while True:
-        oauth_jwt_secret = prompt(
-            "OAuth JWT Secret (generate with: openssl rand -base64 32)", secret=True
-        )
-        if oauth_jwt_secret:
-            break
-        print("❌ OAuth JWT Secret is required")
-
     # Initialize boto3
     try:
         ssm = boto3.client("ssm", region_name=region)
@@ -263,39 +249,62 @@ def main() -> None:
         print("❌ AWS credentials not found. Configure with 'aws configure'")
         sys.exit(1)
 
-    # Create SecureString parameters
+    print("\n🔒 Secrets (stored as SecureString with KMS encryption)")
+    print("-" * 50)
+
+    secrets = [
+        (
+            PARAM_CF_CLIENT_ID,
+            "Cloudflare Access Client ID",
+            (
+                f"Cloudflare Access service token client ID "
+                f"(used by {stack_name} Lambdas: alexa-smart-home, alexa-oauth)"
+            ),
+        ),
+        (
+            PARAM_CF_CLIENT_SECRET,
+            "Cloudflare Access Client Secret",
+            (
+                f"Cloudflare Access service token client secret "
+                f"(used by {stack_name} Lambdas: alexa-smart-home, alexa-oauth)"
+            ),
+        ),
+        (
+            PARAM_OAUTH_JWT_SECRET,
+            "OAuth JWT Secret (generate with: openssl rand -base64 32)",
+            (
+                f"Secret for signing/verifying JWT authorization codes "
+                f"(used by {stack_name} Lambdas: alexa-authorize, alexa-oauth)"
+            ),
+        ),
+    ]
+
+    secret_values: dict[str, str] = {}
+    for param_name, label, _ in secrets:
+        path = get_param_path(stack_name, param_name)
+        try:
+            exists = parameter_exists(ssm, path)
+        except NoCredentialsError:
+            print("❌ AWS credentials not found. Configure with 'aws configure'")
+            sys.exit(1)
+        secret_values[param_name] = prompt_secret(label, keep_existing=exists)
+
+    # Create SecureString parameters (skipping any the user chose to keep)
     print("\n📝 Creating SecureString parameters in Parameter Store...")
     print("   (Encrypted with KMS, visible only to authorized IAM principals)")
 
-    create_secure_parameter(
-        ssm,
-        get_param_path(stack_name, PARAM_CF_CLIENT_ID),
-        cf_client_id,
-        f"Cloudflare Access service token client ID "
-        f"(used by {stack_name} Lambdas: alexa-smart-home, alexa-oauth)",
-    )
+    for param_name, _, description in secrets:
+        path = get_param_path(stack_name, param_name)
+        if secret_values[param_name]:
+            create_secure_parameter(ssm, path, secret_values[param_name], description)
+        else:
+            print(f"  ✓ Keeping existing parameter: {path}")
 
-    create_secure_parameter(
-        ssm,
-        get_param_path(stack_name, PARAM_CF_CLIENT_SECRET),
-        cf_client_secret,
-        f"Cloudflare Access service token client secret "
-        f"(used by {stack_name} Lambdas: alexa-smart-home, alexa-oauth)",
-    )
-
-    create_secure_parameter(
-        ssm,
-        get_param_path(stack_name, PARAM_OAUTH_JWT_SECRET),
-        oauth_jwt_secret,
-        f"Secret for signing/verifying JWT authorization codes "
-        f"(used by {stack_name} Lambdas: alexa-authorize, alexa-oauth)",
-    )
-
-    # Build with SAM
+    # Build with SAM (output streams to the terminal)
     print("\n🔨 Building Lambda package with SAM...")
-    result = subprocess.run(["sam", "build"], check=False, capture_output=True, text=True)
+    result = subprocess.run(["sam", "build"], check=False)
     if result.returncode != 0:
-        print(f"❌ Build failed:\n{result.stderr}")
+        print("❌ Build failed")
         sys.exit(1)
     print("  ✓ Build complete")
 
@@ -321,25 +330,19 @@ def main() -> None:
         "CAPABILITY_IAM",
         "--resolve-s3",
         "--no-confirm-changeset",
+        "--no-fail-on-empty-changeset",
     ]
 
-    result = subprocess.run(deploy_cmd, check=False, capture_output=True, text=True)
-
-    # Check if deployment failed (but treat "no changes" as success)
+    result = subprocess.run(deploy_cmd, check=False)
     if result.returncode != 0:
-        if "No changes to deploy" in result.stderr or "No changes to deploy" in result.stdout:
-            print("\n✅ No changes detected - stack is already up to date!")
-        else:
-            print("\n❌ Deployment failed")
-            print(result.stderr)
-            sys.exit(1)
-    else:
-        print("\n✅ Deployment complete!")
+        print("\n❌ Deployment failed")
+        sys.exit(1)
+    print("\n✅ Deployment complete!")
 
     print("\n📊 View Lambda function URLs:")
     print(f"    sam list stack-outputs --stack-name {stack_name} --region {region}")
     print("\n🔍 View CloudWatch logs:")
-    print(f"    sam logs --stack-name {stack_name} --name alexa-smart-home --tail")
+    print(f"    sam logs --stack-name {stack_name} --name AlexaSmartHomeFunction --tail")
     print("\n🗑️  To delete everything:")
     print("    python3 deploy.py  # Choose 'delete' action")
 

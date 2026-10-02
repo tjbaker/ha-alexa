@@ -19,6 +19,20 @@ from typing import Any
 
 import pytest
 
+import alexa_oauth_handler
+import alexa_smart_home_handler
+
+
+@pytest.fixture(autouse=True)
+def reset_cached_clients() -> None:
+    """Reset module-level HTTP client caches between tests.
+
+    The handlers cache their HTTP clients across warm Lambda invocations;
+    tests patch urllib3 per-test, so stale cached clients must be discarded.
+    """
+    alexa_smart_home_handler._cached_client = None
+    alexa_oauth_handler._cached_client = None
+
 
 @pytest.fixture(autouse=True)
 def mock_parameter_store(mocker: Any) -> None:

@@ -281,3 +281,45 @@ class TestLambdaHandler:
         result = lambda_handler(valid_alexa_event, None)
 
         assert result["event"]["payload"]["type"] == ErrorType.INVALID_AUTHORIZATION.value
+
+    def test_error_response_has_spec_compliant_envelope(
+        self,
+        mocker: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test error responses include the full Alexa ErrorResponse header."""
+        monkeypatch.setenv("BASE_URL", "https://example.com")
+
+        mock_response = Mock()
+        mock_response.status = 500
+        mock_response.data = b"Internal Server Error"
+
+        mocker.patch("urllib3.PoolManager.request", return_value=mock_response)
+
+        event = {
+            "directive": {
+                "header": {
+                    "namespace": "Alexa.PowerController",
+                    "name": "TurnOn",
+                    "payloadVersion": "3",
+                    "messageId": "abc-123",
+                    "correlationToken": "corr-token-456",
+                },
+                "endpoint": {
+                    "scope": {"type": "BearerToken", "token": "test-token"},
+                    "endpointId": "device-001",
+                },
+                "payload": {},
+            }
+        }
+
+        result = lambda_handler(event, None)
+
+        header = result["event"]["header"]
+        assert header["namespace"] == "Alexa"
+        assert header["name"] == "ErrorResponse"
+        assert header["payloadVersion"] == "3"
+        assert header["messageId"]
+        assert header["correlationToken"] == "corr-token-456"
+        assert result["event"]["endpoint"]["endpointId"] == "device-001"
+        assert result["event"]["payload"]["type"] == ErrorType.BRIDGE_UNREACHABLE.value

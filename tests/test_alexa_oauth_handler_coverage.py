@@ -159,6 +159,25 @@ class TestJWTVerification:
         result = _verify_and_extract_ha_code(jwt_code, "secret")
         assert result is None
 
+    def test_jwt_missing_exp_rejected(self) -> None:
+        """Test JWT without an exp claim is rejected."""
+        header = {"alg": "HS256"}
+        payload = {"ha_code": "test_code"}  # No exp
+
+        header_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+        payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+        signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+        signature = (
+            base64.urlsafe_b64encode(hmac.new(b"secret", signing_input, sha256).digest())
+            .decode()
+            .rstrip("=")
+        )
+
+        jwt_code = f"{header_b64}.{payload_b64}.{signature}"
+        result = _verify_and_extract_ha_code(jwt_code, "secret")
+        assert result is None
+
     def test_jwt_missing_ha_code(self) -> None:
         """Test JWT without ha_code field."""
         header = {"alg": "HS256"}
@@ -269,8 +288,9 @@ class TestDebugMode:
         event = {"body": "grant_type=authorization_code&code=test_code&client_id=test"}
 
         response = lambda_handler(event, None)
-        assert "access_token" in response
-        assert response["access_token"] == "token123"
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["access_token"] == "token123"
 
     def test_jwt_unwrap_without_secret(self, monkeypatch: Any, mocker: Any) -> None:
         """Test JWT unwrap when OAUTH_JWT_SECRET is not set."""
@@ -292,7 +312,8 @@ class TestDebugMode:
         event = {"body": "grant_type=authorization_code&code=test_code"}
 
         response = lambda_handler(event, None)
-        assert "access_token" in response
+        assert response["statusCode"] == 200
+        assert "access_token" in json.loads(response["body"])
 
     def test_jwt_unwrap_with_invalid_jwt_debug(self, mock_config: Any, mocker: Any) -> None:
         """Test JWT unwrap failure with DEBUG logging."""
@@ -311,9 +332,8 @@ class TestDebugMode:
         event = {"body": "grant_type=authorization_code&code=invalid.jwt.format"}
 
         response = lambda_handler(event, None)
-        assert "event" in response
-        assert "payload" in response["event"]
-        assert response["event"]["payload"]["type"] == "INTERNAL_ERROR"
+        assert response["statusCode"] == 400
+        assert json.loads(response["body"])["error"] == "invalid_grant"
 
     def test_jwt_unwrap_refresh_token_debug(self, mock_config: Any, mocker: Any) -> None:
         """Test refresh_token grant type skips JWT unwrap with DEBUG."""
@@ -330,8 +350,8 @@ class TestDebugMode:
         event = {"body": "grant_type=refresh_token&refresh_token=refresh123"}
 
         response = lambda_handler(event, None)
-        assert "access_token" in response
-        assert response["access_token"] == "new_token"
+        assert response["statusCode"] == 200
+        assert json.loads(response["body"])["access_token"] == "new_token"
 
 
 class TestExceptionHandling:
@@ -354,10 +374,10 @@ class TestExceptionHandling:
         event = {"body": "grant_type=authorization_code&code=test_code"}
 
         response = lambda_handler(event, None)
-        assert "event" in response
-        assert "payload" in response["event"]
-        assert response["event"]["payload"]["type"] == "INTERNAL_ERROR"
-        assert "Network unreachable" in response["event"]["payload"]["message"]
+        assert response["statusCode"] == 502
+        body = json.loads(response["body"])
+        assert body["error"] == "server_error"
+        assert "Network unreachable" in body["error_description"]
 
     def test_unicode_decode_error_in_body_parsing(self, mock_config: Any, mocker: Any) -> None:
         """Test handling of invalid UTF-8 in request body."""
@@ -369,9 +389,8 @@ class TestExceptionHandling:
 
         response = lambda_handler(event, None)
         # Should handle gracefully and return error
-        assert "event" in response
-        assert "payload" in response["event"]
-        assert response["event"]["payload"]["type"] == "INTERNAL_ERROR"
+        assert response["statusCode"] == 502
+        assert json.loads(response["body"])["error"] == "server_error"
 
     def test_http_500_error(self, mock_config: Any, mocker: Any) -> None:
         """Test HTTP 500 error from Home Assistant."""
@@ -386,10 +405,10 @@ class TestExceptionHandling:
         event = {"body": "grant_type=authorization_code&code=test_code"}
 
         response = lambda_handler(event, None)
-        assert "event" in response
-        assert "payload" in response["event"]
-        assert response["event"]["payload"]["type"] == "INTERNAL_ERROR"
-        assert "500" in response["event"]["payload"]["message"]
+        assert response["statusCode"] == 502
+        body = json.loads(response["body"])
+        assert body["error"] == "server_error"
+        assert "500" in body["error_description"]
 
     def test_http_503_error(self, mock_config: Any, mocker: Any) -> None:
         """Test HTTP 503 (Service Unavailable) from Home Assistant."""
@@ -404,10 +423,10 @@ class TestExceptionHandling:
         event = {"body": "grant_type=authorization_code&code=test_code"}
 
         response = lambda_handler(event, None)
-        assert "event" in response
-        assert "payload" in response["event"]
-        assert response["event"]["payload"]["type"] == "INTERNAL_ERROR"
-        assert "503" in response["event"]["payload"]["message"]
+        assert response["statusCode"] == 502
+        body = json.loads(response["body"])
+        assert body["error"] == "server_error"
+        assert "503" in body["error_description"]
 
 
 class TestConfigEdgeCases:

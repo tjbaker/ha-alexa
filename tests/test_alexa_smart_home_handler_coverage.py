@@ -142,13 +142,14 @@ class TestExceptionHandling:
         assert response["event"]["payload"]["type"] == "INTERNAL_ERROR"
         assert "BASE_URL" in response["event"]["payload"]["message"]
 
-    def test_runtime_error_with_configuration_in_message(
+    def test_parameter_store_failure_returns_internal_error(
         self, mock_config: Any, mocker: Any
     ) -> None:
-        """Test RuntimeError with 'configuration' in message returns INTERNAL_ERROR."""
-        mock_http = mocker.Mock()
-        mock_http.request.side_effect = RuntimeError("Configuration error occurred")
-        mocker.patch("alexa_smart_home_handler.urllib3.PoolManager", return_value=mock_http)
+        """Test Parameter Store failures return INTERNAL_ERROR, not BRIDGE_UNREACHABLE."""
+        mocker.patch(
+            "alexa_smart_home_handler.get_parameter",
+            side_effect=RuntimeError("Failed to fetch parameter /ha-alexa/cf-id: AccessDenied"),
+        )
 
         event = {
             "directive": {
@@ -166,7 +167,7 @@ class TestExceptionHandling:
         response = lambda_handler(event, None)
         assert "event" in response
         assert response["event"]["payload"]["type"] == "INTERNAL_ERROR"
-        assert "configuration" in response["event"]["payload"]["message"].lower()
+        assert "parameter" in response["event"]["payload"]["message"].lower()
 
     def test_runtime_error_network_issue_returns_bridge_unreachable(
         self, mock_config: Any, mocker: Any
@@ -335,8 +336,8 @@ class TestHTTPErrorHandling:
         assert "event" in response
         assert response["event"]["payload"]["type"] == "INVALID_AUTHORIZATION_CREDENTIAL"
 
-    def test_http_403_returns_invalid_authorization(self, mock_config: Any, mocker: Any) -> None:
-        """Test HTTP 403 returns INVALID_AUTHORIZATION_CREDENTIAL."""
+    def test_http_403_returns_bridge_unreachable(self, mock_config: Any, mocker: Any) -> None:
+        """Test HTTP 403 (e.g. Cloudflare Access denial) is not reported as a bad credential."""
         mock_response = mocker.Mock()
         mock_response.status = 403
         mock_response.data = b"Forbidden"
@@ -360,7 +361,7 @@ class TestHTTPErrorHandling:
 
         response = lambda_handler(event, None)
         assert "event" in response
-        assert response["event"]["payload"]["type"] == "INVALID_AUTHORIZATION_CREDENTIAL"
+        assert response["event"]["payload"]["type"] == "BRIDGE_UNREACHABLE"
 
     def test_http_500_returns_bridge_unreachable(self, mock_config: Any, mocker: Any) -> None:
         """Test HTTP 500 returns BRIDGE_UNREACHABLE (HA is down/having issues)."""
