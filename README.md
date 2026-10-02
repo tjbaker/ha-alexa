@@ -292,40 +292,47 @@ Copy the text after `/link/` (e.g., `ABCD1234EFGH`) - this is your **AlexaVendor
 
 ## Home Assistant Configuration
 
-Add or update the following sections in your `configuration.yaml`:
+### 1. Network settings (UI)
+
+In Home Assistant, go to **Settings > System > Network**:
+
+- **Home Assistant URL > Internet**: `https://homeassistant.yourdomain.com`
+- **Trust X-Forwarded-For**: enabled
+- **Trusted proxies**: add each of these (Cloudflare IP ranges, plus your Docker/local network CIDR if applicable):
+  ```
+  173.245.48.0/20
+  103.21.244.0/22
+  103.22.200.0/22
+  103.31.4.0/22
+  141.101.64.0/18
+  108.162.192.0/18
+  190.93.240.0/20
+  188.114.96.0/20
+  197.234.240.0/22
+  198.41.128.0/17
+  162.158.0.0/15
+  104.16.0.0/13
+  104.24.0.0/14
+  172.64.0.0/13
+  131.0.72.0/22
+  172.30.32.0/23
+  ```
+- **CORS allowed origins**:
+  ```
+  https://alexa.amazon.com
+  https://layla.amazon.com
+  https://pitangui.amazon.com
+  https://alexa.amazon.co.jp
+  ```
+
+**Note:** Before Home Assistant 2026.8, the HTTP settings were configured under `http:` in
+`configuration.yaml`. Existing YAML settings are imported into the UI automatically on upgrade.
+
+### 2. Alexa integration (`configuration.yaml`)
+
+The Alexa Smart Home integration is still configured in YAML. Add to your `configuration.yaml`:
 
 ```yaml
-# Core Configuration
-homeassistant:
-  external_url: https://homeassistant.yourdomain.com
-
-# HTTP Configuration
-http:
-  use_x_forwarded_for: true
-  trusted_proxies:
-    - 173.245.48.0/20    # Cloudflare IPs
-    - 103.21.244.0/22
-    - 103.22.200.0/22
-    - 103.31.4.0/22
-    - 141.101.64.0/18
-    - 108.162.192.0/18
-    - 190.93.240.0/20
-    - 188.114.96.0/20
-    - 197.234.240.0/22
-    - 198.41.128.0/17
-    - 162.158.0.0/15
-    - 104.16.0.0/13
-    - 104.24.0.0/14
-    - 172.64.0.0/13
-    - 131.0.72.0/22
-    - 172.30.32.0/23     # Add your Docker/local network CIDR if applicable
-  cors_allowed_origins:
-    - https://alexa.amazon.com
-    - https://layla.amazon.com
-    - https://pitangui.amazon.com
-    - https://alexa.amazon.co.jp
-
-# Alexa Integration
 alexa:
   smart_home:
 ```
@@ -484,7 +491,7 @@ make clean          # Remove build artifacts
 ### "Alexa can't find any devices"
 
 - Verify Home Assistant Alexa integration is configured
-- Check `external_url` in HA configuration
+- Check the Internet URL under **Settings > System > Network** in Home Assistant
 - Review Lambda logs for errors during discovery
 - Ensure Cloudflare service token policy is configured (Bypass action)
 
