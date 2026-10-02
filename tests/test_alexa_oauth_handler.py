@@ -32,6 +32,7 @@ from alexa_oauth_handler import (
     HomeAssistantAuthClient,
     TokenExchangeError,
     TokenRequest,
+    UpstreamError,
     lambda_handler,
 )
 
@@ -282,8 +283,36 @@ class TestHomeAssistantAuthClient:
         mocker.patch.object(client.http, "request", return_value=mock_response)
 
         body = b"grant_type=authorization_code"
-        with pytest.raises(ValueError, match="invalid JSON"):
+        with pytest.raises(UpstreamError, match="invalid JSON"):
             client.exchange_token(body)
+
+    def test_non_object_json_response(self, mock_config: Config, mocker: Any) -> None:
+        """Test that a JSON response that is not an object is an upstream error."""
+        client = HomeAssistantAuthClient(mock_config)
+
+        mock_response = Mock()
+        mock_response.status = 200
+        mock_response.data = b'["not", "a", "token"]'
+
+        mocker.patch.object(client.http, "request", return_value=mock_response)
+
+        with pytest.raises(UpstreamError, match="unexpected response"):
+            client.exchange_token(b"grant_type=authorization_code")
+
+    def test_redirect_is_not_followed(self, mock_config: Config, mocker: Any) -> None:
+        """Test that a redirect (e.g. Cloudflare Access login) is an upstream error."""
+        client = HomeAssistantAuthClient(mock_config)
+
+        mock_response = Mock()
+        mock_response.status = 302
+        mock_response.data = b""
+
+        mock_request = mocker.patch.object(client.http, "request", return_value=mock_response)
+
+        with pytest.raises(UpstreamError, match="Unexpected redirect 302"):
+            client.exchange_token(b"grant_type=authorization_code")
+
+        assert mock_request.call_args.kwargs["redirect"] is False
 
 
 class TestLambdaHandler:
@@ -326,12 +355,14 @@ class TestLambdaHandler:
     def test_missing_base_url(
         self, valid_oauth_event: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Test error when BASE_URL is missing."""
+        """Test that missing configuration is a generic 500, not an upstream error."""
         monkeypatch.delenv("BASE_URL", raising=False)
         result = lambda_handler(valid_oauth_event, None)
 
-        assert result["statusCode"] == 502
-        assert json.loads(result["body"])["error"] == "server_error"
+        assert result["statusCode"] == 500
+        body = json.loads(result["body"])
+        assert body["error"] == "server_error"
+        assert body["error_description"] == "Server configuration error"
 
     def test_invalid_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test handling of invalid events."""
@@ -406,18 +437,44 @@ class TestLambdaHandler:
         mocker: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test handling of runtime errors."""
+        """Test that Parameter Store failures don't leak the parameter path."""
+        monkeypatch.setenv("BASE_URL", "https://example.com")
+        monkeypatch.setenv("CF_CLIENT_ID", "/ha-alexa/cloudflare-client-id")
+
+        mocker.patch(
+            "alexa_oauth_handler.get_parameter",
+            side_effect=RuntimeError(
+                "Failed to fetch parameter /ha-alexa/cloudflare-client-id: AccessDenied"
+            ),
+        )
+
+        result = lambda_handler(valid_oauth_event, None)
+
+        assert result["statusCode"] == 500
+        assert json.loads(result["body"])["error"] == "server_error"
+        assert "/ha-alexa/" not in result["body"]
+
+    def test_upstream_error_hides_details(
+        self,
+        valid_oauth_event: dict[str, Any],
+        mocker: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that upstream failures return a generic 502 without hostnames."""
         monkeypatch.setenv("BASE_URL", "https://example.com")
 
         mocker.patch(
             "alexa_oauth_handler.HomeAssistantAuthClient.exchange_token",
-            side_effect=RuntimeError("Connection failed"),
+            side_effect=UpstreamError("Connection failed: example.com:443 refused"),
         )
 
         result = lambda_handler(valid_oauth_event, None)
 
         assert result["statusCode"] == 502
-        assert json.loads(result["body"])["error"] == "server_error"
+        assert json.loads(result["body"]) == {
+            "error": "server_error",
+            "error_description": "Home Assistant is unavailable",
+        }
 
 
 class TestAuthorizeToTokenRoundTrip:

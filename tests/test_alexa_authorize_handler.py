@@ -377,6 +377,54 @@ class TestLambdaHandler:
         body = json.loads(result["body"])
         assert body["error"] == "invalid_request"
 
+    def test_ha_error_callback_redirects_to_alexa(self, mock_config: Any) -> None:
+        """Test that an OAuth error from HA returns the user to Alexa with the error."""
+        envelope = {
+            "a_state": "alexa_state_123",
+            "redirect_uri": "https://pitangui.amazon.com/api/skill/link/VENDOR123",
+        }
+        event = {
+            "requestContext": {"domainName": "lambda.us-east-1.on.aws"},
+            "queryStringParameters": {"error": "access_denied", "state": _json_b64(envelope)},
+        }
+
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 302
+        assert result["headers"]["Location"] == (
+            "https://pitangui.amazon.com/api/skill/link/VENDOR123"
+            "?error=access_denied&state=alexa_state_123"
+        )
+
+    def test_ha_error_callback_normalizes_unknown_error(self, mock_config: Any) -> None:
+        """Test that a non-standard error value is replaced with access_denied."""
+        envelope = {
+            "a_state": "alexa_state_123",
+            "redirect_uri": "https://pitangui.amazon.com/api/skill/link/VENDOR123",
+        }
+        event = {
+            "requestContext": {"domainName": "lambda.us-east-1.on.aws"},
+            "queryStringParameters": {"error": "<script>", "state": _json_b64(envelope)},
+        }
+
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 302
+        assert "error=access_denied" in result["headers"]["Location"]
+
+    def test_ha_error_callback_rejects_disallowed_redirect(self, mock_config: Any) -> None:
+        """Test that an error callback cannot be used as an open redirect."""
+        envelope = {"a_state": "alexa_state_123", "redirect_uri": "https://evil.com/redirect"}
+        event = {
+            "requestContext": {"domainName": "lambda.us-east-1.on.aws"},
+            "queryStringParameters": {"error": "access_denied", "state": _json_b64(envelope)},
+        }
+
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"])["error"] == "invalid_request"
+
     def test_unsupported_response_type_with_valid_redirect(self, mock_config: Any) -> None:
         """Test unsupported response_type redirects with error."""
         event = {

@@ -377,7 +377,8 @@ class TestExceptionHandling:
         assert response["statusCode"] == 502
         body = json.loads(response["body"])
         assert body["error"] == "server_error"
-        assert "Network unreachable" in body["error_description"]
+        assert body["error_description"] == "Home Assistant is unavailable"
+        assert "Network unreachable" not in response["body"]
 
     def test_unicode_decode_error_in_body_parsing(self, mock_config: Any, mocker: Any) -> None:
         """Test handling of invalid UTF-8 in request body."""
@@ -408,7 +409,7 @@ class TestExceptionHandling:
         assert response["statusCode"] == 502
         body = json.loads(response["body"])
         assert body["error"] == "server_error"
-        assert "500" in body["error_description"]
+        assert "Internal Server Error" not in response["body"]
 
     def test_http_503_error(self, mock_config: Any, mocker: Any) -> None:
         """Test HTTP 503 (Service Unavailable) from Home Assistant."""
@@ -426,7 +427,7 @@ class TestExceptionHandling:
         assert response["statusCode"] == 502
         body = json.loads(response["body"])
         assert body["error"] == "server_error"
-        assert "503" in body["error_description"]
+        assert "Service Temporarily Unavailable" not in response["body"]
 
 
 class TestConfigEdgeCases:
