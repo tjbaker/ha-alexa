@@ -141,7 +141,7 @@ The script will:
 1. **Create SecureString parameters** in Parameter Store with KMS encryption
 2. **Build** the Lambda package with `sam build`
 3. **Deploy** the CloudFormation stack with `sam deploy`
-4. **Display** the function URLs you need for Alexa configuration
+4. **Display** the command to list the function URLs you need for Alexa configuration
 
 **Required: record the deployment outputs**
 
@@ -149,8 +149,11 @@ After deployment completes, run the following command to retrieve the Lambda
 function URLs and ARN required by the Alexa Developer Console:
 
 ```bash
-sam list stack-outputs --stack-name ha-alexa --region us-east-1
+sam list stack-outputs --stack-name ha-alexa --region <your-region>
 ```
+
+Use the stack name and region you entered in `deploy.py` (it prints this exact
+command at the end of a deployment).
 
 Note the `OutputValue` for each of these `OutputKey` entries:
 

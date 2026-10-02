@@ -226,6 +226,8 @@ Resources:
           - Authorization
         MaxAge: 86400
 
+  # Public Function URLs need both lambda:InvokeFunction (scoped to Function URL
+  # calls via InvokedViaFunctionUrl) and lambda:InvokeFunctionUrl (below)
   AlexaOAuthFunctionInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
