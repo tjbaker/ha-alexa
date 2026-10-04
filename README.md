@@ -285,7 +285,17 @@ https://alexa.amazon.co.jp/api/skill/link/ABCD1234EFGH
 
 Copy the text after `/link/` (e.g., `ABCD1234EFGH`) - this is your **AlexaVendorId** for SAM deployment.
 
-### 4. Enable for Testing
+### 4. Enable Alexa Events
+
+In your skill's **Permissions** section, turn on **Send Alexa Events** and note the
+**Alexa Client Id** and **Alexa Client Secret** shown there. Home Assistant uses these
+to push device state changes to Alexa (see [Alexa integration](#2-alexa-integration-configurationyaml)).
+They are not the account linking credentials from step 3.
+
+Without this, the Alexa app only learns a device's state when it polls, so it can show
+stale state for a long time after a change made outside Alexa (or even one made through Alexa).
+
+### 5. Enable for Testing
 
 - Go to Test > Enable for testing in "Development"
 - Save and deploy skill
@@ -335,9 +345,31 @@ The Alexa Smart Home integration is still configured in YAML. Add to your `confi
 ```yaml
 alexa:
   smart_home:
+    endpoint: https://api.amazonalexa.com/v3/events
+    client_id: !secret alexa_client_id
+    client_secret: !secret alexa_client_secret
 ```
 
+And to `secrets.yaml`, using the values from [Enable Alexa Events](#4-enable-alexa-events):
+
+```yaml
+alexa_client_id: amzn1.application-oa2-client.xxx
+alexa_client_secret: amzn1.oa2-cs.v1.xxx
+```
+
+The `endpoint` must match your Alexa account's region:
+
+| Region | Endpoint |
+|--------|----------|
+| North America | `https://api.amazonalexa.com/v3/events` |
+| Europe | `https://api.eu.amazonalexa.com/v3/events` |
+| Far East | `https://api.fe.amazonalexa.com/v3/events` |
+
 Restart Home Assistant.
+
+**Note:** Home Assistant receives the token it needs to send events during account
+linking. If you add these settings after the skill is already linked, disable and
+re-enable the skill in the Alexa app to link it again (see below).
 
 ## Enable Skill and Link Account
 
@@ -346,6 +378,10 @@ Restart Home Assistant.
 3. Find your skill and Enable
 4. When prompted, log in to Home Assistant
 5. After linking completes, Alexa will automatically discover all supported devices
+
+To link again (e.g., after enabling Alexa Events), tap **Disable Skill** on the same page,
+then enable it and log in again. Disabling removes the skill's devices from Alexa; discovery
+re-adds them, but check that any Alexa routines using them still point at the right device.
 
 **Supported Device Types:**
 
@@ -494,6 +530,15 @@ make clean          # Remove build artifacts
 - Check the Internet URL under **Settings > System > Network** in Home Assistant
 - Review Lambda logs for errors during discovery
 - Ensure Cloudflare service token policy is configured (Bypass action)
+
+### Alexa App Shows Stale Device State
+
+Commands work and Home Assistant updates right away, but the Alexa app lags behind:
+
+- Verify **Send Alexa Events** is enabled in the skill's Permissions ([step 4](#4-enable-alexa-events))
+- Verify `endpoint`, `client_id`, and `client_secret` are set under `alexa: smart_home:` in Home Assistant
+- Disable and re-enable the skill in the Alexa app to link it again; Home Assistant only gets its event token during linking
+- Check the Home Assistant logs for `alexa` errors (e.g., a missing or invalid token)
 
 ### View Logs
 
