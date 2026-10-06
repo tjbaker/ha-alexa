@@ -441,23 +441,26 @@ def _sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
         event: Event to sanitize.
 
     Returns:
-        Event with tokens redacted.
+        Event with tokens and authorization codes redacted.
     """
     import copy
 
     sanitized = copy.deepcopy(event)
     directive = sanitized.get("directive", {})
 
-    # Redact tokens in all possible locations
-    for path in [
-        ("endpoint", "scope"),
-        ("payload", "grantee"),
-        ("payload", "scope"),
+    # Redact credentials in every location a directive carries them: bearer tokens, and the
+    # authorization code in an AcceptGrant directive (payload.grant.code), which Home Assistant
+    # exchanges for its event-gateway tokens.
+    for path, field in [
+        (("endpoint", "scope"), "token"),
+        (("payload", "grantee"), "token"),
+        (("payload", "scope"), "token"),
+        (("payload", "grant"), "code"),
     ]:
         current = directive
         for key in path[:-1]:
             current = current.get(key, {})
-        if path[-1] in current and "token" in current[path[-1]]:
-            current[path[-1]]["token"] = "[REDACTED]"
+        if path[-1] in current and field in current[path[-1]]:
+            current[path[-1]][field] = "[REDACTED]"
 
     return sanitized

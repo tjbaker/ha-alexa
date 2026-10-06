@@ -51,6 +51,24 @@ class TestEventSanitization:
         sanitized = _sanitize_event(event)
         assert sanitized["directive"]["payload"]["grantee"]["token"] == "[REDACTED]"
 
+    def test_sanitize_event_with_accept_grant_code(self) -> None:
+        """Test sanitization of an AcceptGrant directive's authorization code and grantee token."""
+        event = {
+            "directive": {
+                "header": {"namespace": "Alexa.Authorization", "name": "AcceptGrant"},
+                "payload": {
+                    "grant": {"type": "OAuth2.AuthorizationCode", "code": "secret_auth_code"},
+                    "grantee": {"type": "BearerToken", "token": "secret_token"},
+                },
+            }
+        }
+        sanitized = _sanitize_event(event)
+        assert sanitized["directive"]["payload"]["grant"]["code"] == "[REDACTED]"
+        assert sanitized["directive"]["payload"]["grant"]["type"] == "OAuth2.AuthorizationCode"
+        assert sanitized["directive"]["payload"]["grantee"]["token"] == "[REDACTED]"
+        # The original event is left intact for forwarding to Home Assistant.
+        assert event["directive"]["payload"]["grant"]["code"] == "secret_auth_code"
+
     def test_sanitize_event_with_payload_scope_token(self) -> None:
         """Test sanitization of token in payload scope."""
         event = {
