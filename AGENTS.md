@@ -13,6 +13,8 @@ and Cloudflare Access. User-facing setup docs live in `README.md`.
 - `template.yaml` - SAM template; `deploy.py` - interactive deploy script
 - `tests/` - pytest; `test_*_coverage.py` files hold edge-case and error-path tests
 - `events/` - sample events for `sam local invoke`
+- `samconfig.toml` - SAM deploy defaults (stack name, region, parameter overrides)
+- `.github/workflows/` - `ci.yml` (lint incl. cfn-lint, type-check, tests with the 90% coverage gate), `codeql.yml`
 
 Account linking flow: Alexa → authorize handler → HA login → authorize handler
 (mints JWT) → Alexa → token handler (unwraps JWT) → HA `/auth/token`.
@@ -25,7 +27,7 @@ Use a Python 3.13 virtualenv (the system `python3` may be newer than the Lambda 
 make install-dev   # pip install -e ".[dev]"
 make format        # ruff format + ruff check --fix
 make lint          # ruff check + ruff format --check + cfn-lint on template.yaml
-make type-check    # mypy --strict on the four Lambda modules (not deploy.py or tests)
+make type-check    # mypy (strict settings in pyproject.toml) on the four Lambda modules, not deploy.py or tests
 make test          # pytest
 make test-cov      # pytest with coverage; CI fails below 90%
 ```
@@ -69,6 +71,16 @@ Before finishing a change, run `make lint type-check test-cov`; all must pass.
 - Public Function URLs (`AuthType: NONE`) need both `lambda:InvokeFunctionUrl` and
   `lambda:InvokeFunction` permissions
 - Lambda `Timeout` in `template.yaml` must exceed `CONNECT_TIMEOUT + READ_TIMEOUT` in the handlers
+- **Alexa events (state reporting) need a fresh AcceptGrant.** The skill's "Send Alexa
+  Events" permission plus HA's `alexa: smart_home:` `endpoint`, `client_id`, and
+  `client_secret` let HA push state changes. Alexa sends an `Alexa.Authorization`
+  `AcceptGrant` directive only when the skill is (re)linked; this handler forwards it to
+  HA, which exchanges the code for event gateway tokens. If HA's `alexa.state_report` log
+  shows `INVALID_ACCESS_TOKEN` or no token, the user must disable and re-enable the skill
+- Functions run with 128 MB (`MemorySize` in `template.yaml`). Cold starts pay for
+  importing boto3, the first Parameter Store reads, and a new TLS connection through
+  Cloudflare, so keep module-level work light; raising `MemorySize` (more CPU) is the
+  lever if cold-start latency matters
 
 ## Boundaries
 
